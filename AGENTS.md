@@ -70,6 +70,27 @@ Signed-off-by: Your Name <your.email@example.com>
 
 Review comments from agent bots (e.g., gemini-code-assist) can be outdated or wrong. Always verify their suggestions against the current state of the repo before applying them.
 
+### User Personal Guidelines
+
+For this fork, follow these user preferences:
+
+#### Git learning preference
+
+When Git operations are relevant:
+
+- Prefer suggesting that the user runs the Git command directly.
+- Provide copy-pasteable Git command examples.
+- Explain what each command does and when to use it.
+- Explain key parameters and why they fit the scenario.
+
+#### Commit message style
+
+Use concise Conventional Commits style: `type: details`.
+
+#### Python call convention
+
+To reduce argument-order mistakes, prefer keyword arguments where practical.
+
 ---
 
 ## Domain-Specific Guides
