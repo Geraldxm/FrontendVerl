@@ -63,6 +63,8 @@ class NaiveRewardManager(RewardManagerBase):
             if self.reward_router_address is not None
             else {}
         )
+
+        # 调用 reward function 计算 reward
         if self.is_async_reward_score:
             result = await self.compute_score(
                 data_source=data_source,
@@ -96,4 +98,5 @@ class NaiveRewardManager(RewardManagerBase):
 
         reward = score
 
+        # reward_extra_info 被传出
         return {"reward_score": reward, "reward_extra_info": reward_extra_info}

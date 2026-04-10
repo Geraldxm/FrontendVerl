@@ -486,17 +486,23 @@ class RayPPOTrainer:
         self.validation_generations_logger.log(self.config.trainer.logger, samples, self.global_steps)
 
     def _get_gen_batch(self, batch: DataProto) -> DataProto:
+        # 取交集
         reward_keys = set({"data_source", "reward_model", "extra_info", "uid"}) & batch.non_tensor_batch.keys()
 
         # pop those keys for generation
+        # 对于 batch 内的  tensor 部分, 不执行弹出
         batch_keys_to_pop = []
+        # 对于 non 的部分, 去除 reward_keys, 因为只需要生成的信息
         non_tensor_batch_keys_to_pop = set(batch.non_tensor_batch.keys()) - reward_keys
+        
+        # 弹出, 剩下轻量级的 gen_batch
         gen_batch = batch.pop(
             batch_keys=batch_keys_to_pop,
             non_tensor_batch_keys=list(non_tensor_batch_keys_to_pop),
         )
 
         # For agent loop, we need reward model keys to compute score.
+        # 但是对 agent loop, 把原 batch 里残留的 reward_keys 重新拷贝一份，塞进 gen_batch。因为 vLLM 生成完成触发 Agent 环境回调或评分时，可能需要知道这条数据是哪来的（uid）或者该用什么规则打分（reward_model）。
         gen_batch.non_tensor_batch.update(batch.non_tensor_batch)
 
         return gen_batch
@@ -830,6 +836,16 @@ class RayPPOTrainer:
         # reward model (colocate or standalone): get resource_pool
         # no reward model: resource_pool = None
         resource_pool = self.resource_pool_manager.get_resource_pool(Role.RewardModel) if self.use_rm else None
+
+        # reward_loop_manager 的 !!!reward_loop_worker_handles!!!
+        # 在 Agent loop 里被调用 "result = await selected_reward_loop_worker_handle.compute_score.remote(data)"
+
+        # use_rm, 便于批量处理 rollout 结果计算 reward
+        # RewardLoopManager.compute_rm_score
+        #   --> RewardLoopWorker.compute_score_batch
+        #       --> RewardLoopWorker.compute_score
+        #           !!! when rm is genrm: raise error (user-costomized reward func must be provided)
+        #           --> RewardManager.run_single(data)
         self.reward_loop_manager = RewardLoopManager(
             config=self.config,
             rm_resource_pool=resource_pool,
@@ -1294,6 +1310,8 @@ class RayPPOTrainer:
         to construct the PPO dataflow.
         The light-weight advantage computation is done on the driver process.
         """
+        # PPO训练主循环，基于Ray的单控制器训练器。
+        # 驱动进程通过RPC调用worker组的计算函数来构建PPO数据流，轻量级的优势值计算在 driver 上完成。
         from omegaconf import OmegaConf
 
         from verl.utils.tracking import Tracking
@@ -1307,14 +1325,14 @@ class RayPPOTrainer:
 
         self.global_steps = 0
 
-        # load checkpoint and update weights before doing anything
+        # load checkpoint and update weights before doing anything  # 加载检查点并更新权重
         self._load_checkpoint()
         self.checkpoint_manager.update_weights(self.global_steps)
 
         current_epoch = self.global_steps // len(self.train_dataloader)
 
-        # perform validation before training
-        # currently, we only support validation using the reward_function.
+        # perform validation before training  # 训练前验证
+        # currently, we only support validation using the reward_function.  # 目前仅支持使用reward_function进行验证
         if self.config.trainer.get("val_before_train", True):
             val_metrics = self._validate()
             assert val_metrics, f"{val_metrics=}"
@@ -1343,6 +1361,7 @@ class RayPPOTrainer:
         )
         next_step_profile = False
 
+        # 开始训练循环：外层循环遍历epoch，内层循环遍历数据加载器中的批次
         for epoch in range(current_epoch, self.config.trainer.total_epochs):
             for batch_dict in self.train_dataloader:
                 if hasattr(self.actor_rollout_wg, "async_calls_finalize_fn_exec"):
@@ -1364,10 +1383,13 @@ class RayPPOTrainer:
                     [str(uuid.uuid4()) for _ in range(len(batch.batch))], dtype=object
                 )
 
+                # 准备生成批次：从原始批次中提取生成所需的数据
                 gen_batch = self._get_gen_batch(batch)
 
                 # pass global_steps to trace
                 gen_batch.meta_info["global_steps"] = self.global_steps
+                
+                # 重复生成批次以进行多次rollout（例如，每个输入生成多个响应）
                 gen_batch_output = gen_batch.repeat(
                     repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True
                 )
@@ -1375,9 +1397,26 @@ class RayPPOTrainer:
                 is_last_step = self.global_steps >= self.total_training_steps
                 with marked_timer("step", timing_raw):
                     # generate a batch
+
+                    # 当 use_rm == False, 在 "gen" 里面算 reward
                     with marked_timer("gen", timing_raw, color="red"):
                         if curr_step_profile:
                             self.async_rollout_manager.start_profile()
+
+                        # 关注这里的 async_rollout_manager.generate_sequences
+                        # --> AgentLoopManager.generate_sequences: 将多个 worker 的结果收集起来
+                        #   --> AgentLoopWorker.generate_sequences: 调用 _run_agent_loop 返回数据类, 然后调用
+                        #   _postprocess 将数据打包为 DataProto
+                        #     --> AgentLoopWorker._run_agent_loop: 单条处理
+                        #        --> AgentLoopWorker._agent_loop_postprocess: 单条处理
+                        #           --> AgentLoopWorker._compute_score
+                        #              --> RewardLoopWorker.compute_score.remote(data)
+                        #                 --> RewardLoopWorker.reward_manager.run_single(data)    
+                        #                    --> RewardManager.compute_score
+                        
+                        # [详情见 AgentLoopWorker._postprocess]
+                        # 原始传出 scores 在 batch["rm_scores"] = rm_scores
+                        # reward_extra_infos 被全部复制进入 non_tensor_batch[key]=value
                         gen_batch_output = self.async_rollout_manager.generate_sequences(gen_batch_output)
                         self.checkpoint_manager.sleep_replicas()
                         if curr_step_profile:
@@ -1440,19 +1479,25 @@ class RayPPOTrainer:
                             continue
                         images_seqlens_all.extend(multi_modal_input["images_seqlens"].tolist())
                     batch.meta_info["images_seqlens"] = images_seqlens_all
+                    
+                    # 奖励计算：使用奖励模型计算奖励分数，并提取奖励张量和额外信息
+
+                    # use_rm == False, 不在这里计算, 而在 "gen"; 处理单条数据比较合适
+                    # 考虑直接使用 rm
                     with marked_timer("reward", timing_raw, color="yellow"):
-                        # compute reward model score
+                        # rm 只允许 disrm!
                         if self.use_rm and "rm_scores" not in batch.batch.keys():
                             batch_reward = self._compute_reward_colocate(batch)
                             batch = batch.union(batch_reward)
 
+                        # genrm 后处理需要在这里之前!
                         # extract reward_tensor and reward_extra_infos_dict for training
                         reward_tensor, reward_extra_infos_dict = extract_reward(batch)
 
-                    # Operating Mode Selection:
-                    # - Bypass mode: Sets old_log_probs = rollout_log_probs (2 policies: π_rollout, π_θ)
-                    # - Decoupled mode: Recomputes old_log_probs as proximal anchor (3 policies: π_rollout, π_old, π_θ)
-                    #   Note: π_old computed once per data batch, serves as stable reference during mini-batch updates
+                    # Operating Mode Selection:  # 操作模式选择
+                    # - Bypass mode: Sets old_log_probs = rollout_log_probs (2 policies: π_rollout, π_θ)  # 绕过模式：将旧对数概率设为rollout对数概率（两个策略：π_rollout, π_θ）
+                    # - Decoupled mode: Recomputes old_log_probs as proximal anchor (3 policies: π_rollout, π_old, π_θ)  # 解耦模式：重新计算旧对数概率作为近端锚点（三个策略：π_rollout, π_old, π_θ）
+                    #   Note: π_old computed once per data batch, serves as stable reference during mini-batch updates  # 注意：π_old每个数据批次计算一次，作为迷你批次更新期间的稳定参考
                     rollout_corr_config = self.config.algorithm.get("rollout_correction", None)
                     bypass_recomputing_logprobs = rollout_corr_config and rollout_corr_config.get("bypass_mode", False)
                     if bypass_recomputing_logprobs:  # Use `rollout_log_probs`

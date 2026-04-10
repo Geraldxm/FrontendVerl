@@ -521,6 +521,20 @@ class AgentLoopWorker:
             trace_config.get("max_samples_per_step_per_worker", None),
         )
 
+    # --> AgentLoopManager.generate_sequences
+    # --> ***AgentLoopWorker.generate_sequences***
+    
+    # 调用 _run_agent_loop        
+    # _run_agent_loop 返回数据类 _InternalAgentLoopOutput, 其中包含 reward_score 和 reward_extra_info
+    # 调用 _postprocess
+    # 将数据打包成 DataProto
+    
+    # --> AgentLoopWorker._run_agent_loop
+    #     --> AgentLoopWorker._agent_loop_postprocess
+    #         --> AgentLoopWorker._compute_score
+    #             --> RewardLoopWorker.compute_score.remote(data)
+    #                 --> RewardLoopWorker.reward_manager.run_single(data)    
+    #                     --> RewardManager.compute_score
     async def generate_sequences(self, batch: DataProto) -> DataProto:
         """Generate sequences from agent loop.
 
@@ -588,6 +602,11 @@ class AgentLoopWorker:
         )
 
         tasks = []
+
+        # 调用 _run_agent_loop        
+        # _run_agent_loop 返回数据类 _InternalAgentLoopOutput, 其中包含 reward_score 和 reward_extra_info
+        # reward_score=_InternalAgentLoopOutput.reward_score
+        # reward_extra_info = _InternalAgentLoopOutput.extra_fields["reward_extra_info"]
         for i in range(len(batch)):
             trace_this_sample = i in traced_indices
             kwargs = {k: v[i] for k, v in batch.non_tensor_batch.items()}
@@ -596,6 +615,9 @@ class AgentLoopWorker:
                     self._run_agent_loop(sampling_params, trajectory_info[i], trace=trace_this_sample, **kwargs)
                 )
             )
+        
+        # reward_score=_InternalAgentLoopOutput.reward_score
+        # reward_extra_info = _InternalAgentLoopOutput.extra_fields["reward_extra_info"]
         outputs = await asyncio.gather(*tasks)
 
         output = self._postprocess(
@@ -637,6 +659,12 @@ class AgentLoopWorker:
             output: AgentLoopOutput = await agent_loop.run(sampling_params, **kwargs)
             return await self._agent_loop_postprocess(output, trajectory["validate"], **kwargs)
 
+    # 调用 self._compute_score, 目的是将 reward 信息插回 output
+    # output.reward_score = result["reward_score"]
+    # output.extra_fields["reward_extra_info"] = result["reward_extra_info"]
+    # 返回数据类 _InternalAgentLoopOutput, 其中包含 reward_score 和 reward_extra_info
+    # reward_score=_InternalAgentLoopOutput.reward_score
+    # reward_extra_info = _InternalAgentLoopOutput.extra_fields["reward_extra_info"]
     async def _agent_loop_postprocess(self, output, validate, **kwargs) -> _InternalAgentLoopOutput:
         """Perform post-processing operations on the output of each individual agent loop."""
         output.extra_fields["raw_prompt"] = kwargs["raw_prompt"]
@@ -734,6 +762,10 @@ class AgentLoopWorker:
 
         multi_modal_inputs = self._compute_multi_modal_inputs(output, input_ids)
         position_ids = self._compute_position_ids(input_ids, attention_mask, multi_modal_inputs)
+        
+        # !!! 此处调用 self._compute_score, 目的是将 reward 信息插回 output
+        # output.reward_score = result["reward_score"]
+        # output.extra_fields["reward_extra_info"] = result["reward_extra_info"]
         await self._compute_score(
             output,
             prompts=prompt_output["input_ids"],
@@ -783,6 +815,8 @@ class AgentLoopWorker:
             reward_score=output.reward_score,
             num_turns=output.num_turns,
             metrics=output.metrics,
+            # output.reward_score = result["reward_score"]
+            # output.extra_fields["reward_extra_info"] = result["reward_extra_info"]
             extra_fields=output.extra_fields,
         )
 
@@ -852,6 +886,7 @@ class AgentLoopWorker:
         position_ids = torch.cat((text_position_ids, vision_position_ids), dim=1)  # (1, 4, seq_length)
         return position_ids
 
+    # 被 _agent_loop_postprocess 调用
     async def _compute_score(self, output, prompts, responses, attention_mask, input_ids, position_ids, kwargs):
         """Compute reward score for single sample."""
         enable_async_reward = self.reward_loop_worker_handles is not None
@@ -878,6 +913,15 @@ class AgentLoopWorker:
                 non_tensor_batch=non_tensor_batch,
             )
             selected_reward_loop_worker_handle = random.choice(self.reward_loop_worker_handles)
+
+            # 核心位置!!!, 那么 reward_loop_worker_handles 从哪里来呢
+            # RewardLoopWorker 实际上是加载了 reward_manager, 使用 reward_manager
+            # 中的 run_single (assert len(data) == 1, "Only support single data item")
+            # 调用 "if self.is_async_reward_score:"  result = await self.compute_score
+            # 其 compute_score 来自 __init__ 时
+            # self.compute_score = compute_score or default_compute_score
+            
+            # result = {"reward_score": reward, "reward_extra_info": reward_extra_info}
             result = await selected_reward_loop_worker_handle.compute_score.remote(data)
             output.reward_score = result["reward_score"]
             output.extra_fields["reward_extra_info"] = result["reward_extra_info"]
@@ -898,7 +942,12 @@ class AgentLoopWorker:
         input_non_tensor_batch: dict | None = None,
         validate: bool = False,
     ) -> DataProto:
-        """Process the padded outputs from _run_agent_loop and combine them into a batch."""
+        """
+        Process the padded outputs from _run_agent_loop and combine them into a batch.
+        被 AgentLoopWorker.generate_sequences 调用,
+        将其 _run_agent_loop 中返回的数据类 _InternalAgentLoopOutput, 其中包含 reward_score 和 reward_extra_info
+        打包为 DataProto 返回
+        """
         # Convert lists back to tensors and stack them to create a batch.
         prompt_ids = torch.cat([input.prompt_ids for input in inputs], dim=0)
         response_ids = torch.cat([input.response_ids for input in inputs], dim=0)
@@ -928,11 +977,26 @@ class AgentLoopWorker:
             batch_size=len(inputs),
         )
 
+        
+        # reward_score=_InternalAgentLoopOutput.reward_score
+        # reward_extra_info = _InternalAgentLoopOutput.extra_fields["reward_extra_info"]
+        
+        # 这里收集上一步的 reward_score
+        # 先处理成列表
         scores = [input.reward_score for input in inputs]
         if all(score is not None for score in scores):
+            # 4. 计算每条样本的response（回复）部分的实际有效长度
+            # attention_mask[:, prompt_length:]：截取attention_mask中response部分的掩码
+            # sum(dim=1)：按行求和，得到每条样本response部分的token总数（有效token为1，无效为0）
             prompt_length = prompt_ids.size(1)
             response_length = attention_mask[:, prompt_length:].sum(dim=1) - 1
+            
+            # 5. 创建和response_mask维度完全一致的全0张量，用于存放奖励分数
             rm_scores = torch.zeros_like(response_mask, dtype=torch.float32)
+            # 6. 将奖励分数放到response的最后一个有效token的位置上
+            # torch.arange(response_mask.size(0))：生成样本索引（0,1,2...）
+            # response_length：每条样本response最后一个有效token的列索引
+            # 最终效果：只有最后一个有效token的位置有奖励分数，其余位置为0
             rm_scores[torch.arange(response_mask.size(0)), response_length] = torch.tensor(scores, dtype=torch.float32)
             batch["rm_scores"] = rm_scores
 
@@ -1040,6 +1104,8 @@ class AgentLoopManager:
         self.rollout_config, self.model_config = _get_rollout_and_model_config(config)
         self.worker_group = worker_group
         self.rollout_resource_pool = rollout_resource_pool
+
+        # 这个 handles 被用来 _compute_score
         self.reward_loop_worker_handles = reward_loop_worker_handles
 
         self.teacher_model_manager = teacher_model_manager

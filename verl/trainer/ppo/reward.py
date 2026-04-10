@@ -86,6 +86,14 @@ def get_custom_reward_fn(config: DictConfig) -> Optional[RawRewardFn]:
         return partial(_call_with_kwargs_async, raw_fn, reward_kwargs)
 
 
+# 被 RewardLoopWorker 调用, 在其中 compute
+# verl.experimental.reward_loop.reward_loop.RewardLoopWorker
+# self.reward_manager = load_reward_manager(
+#         self.config,
+#         self.input_tokenizer,
+#         reward_router_address=self.reward_router_address,
+#         reward_model_tokenizer=self.reward_model_tokenizer,
+#     )
 def load_reward_manager(config: DictConfig, tokenizer: Any, **reward_kwargs: Any) -> RewardManagerBase:
     """
     Load and initialize a reward manager based on the configuration.
