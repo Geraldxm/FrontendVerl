@@ -17,7 +17,7 @@ from typing import Any, Optional
 
 from verl.base_config import BaseConfig
 
-__all__ = ["AlgoConfig", "FilterGroupsConfig", "KLControlConfig", "RolloutCorrectionConfig"]
+__all__ = ["AlgoConfig", "FilterGroupsConfig", "FocalConfig", "KLControlConfig", "RolloutCorrectionConfig"]
 
 
 @dataclass
@@ -37,6 +37,16 @@ class KLControlConfig(BaseConfig):
     kl_coef: float = 0.001
     horizon: int = 10000
     target_kl: float = 0.1
+
+
+@dataclass
+class FocalConfig(BaseConfig):
+    """Configuration for focal reward aggregation."""
+
+    gamma: float = 3.0
+    temperature: float = 10.0
+    epsilon: float = 0.05
+    base_weights: list[float] = field(default_factory=list)
 
 
 @dataclass
@@ -624,6 +634,8 @@ class AlgoConfig(BaseConfig):
         lam (float): Trade-off between bias and variance in the GAE estimator.
         adv_estimator (str): Advantage estimator type: "gae", "grpo", "reinforce_plus_plus", etc.
         norm_adv_by_std_in_grpo (bool): Whether to normalize advantages by std (specific to GRPO).
+        use_focal (bool): Whether to use focal-weighted reward aggregation instead of direct averaging.
+        focal (FocalConfig): Configuration for focal reward aggregation.
         use_kl_in_reward (bool): Whether to enable in-reward KL penalty.
         kl_penalty (str): How to estimate KL divergence: "kl", "abs", "mse", "low_var_kl", or "full".
         kl_ctrl (KLControlConfig): KL control configuration.
@@ -652,6 +664,8 @@ class AlgoConfig(BaseConfig):
     lam: float = 1.0
     adv_estimator: str = "gae"
     norm_adv_by_std_in_grpo: bool = True
+    use_focal: bool = False
+    focal: FocalConfig = field(default_factory=FocalConfig)
     use_kl_in_reward: bool = False
     kl_penalty: str = "kl"
     kl_ctrl: KLControlConfig = field(default_factory=KLControlConfig)

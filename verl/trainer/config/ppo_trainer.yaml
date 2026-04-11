@@ -57,6 +57,12 @@ actor_rollout_ref:
 
 # config for the algorithm
 algorithm:
+  use_focal: False
+  focal:
+    gamma: 3.0
+    temperature: 10.0
+    epsilon: 0.05
+    base_weights: []
 
   # Required when using verl.utils.omega_conf_to_dataclass to instantiate dataclass configs
   _target_: verl.trainer.config.AlgoConfig

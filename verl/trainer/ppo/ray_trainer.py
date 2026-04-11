@@ -42,6 +42,7 @@ from verl.trainer.config import AlgoConfig
 from verl.trainer.distillation.losses import is_distillation_enabled
 from verl.trainer.ppo import core_algos
 from verl.trainer.ppo.core_algos import AdvantageEstimator, agg_loss
+from verl.trainer.ppo.focal_reward import make_json_serializable, postprocess_reward
 from verl.trainer.ppo.metric_utils import (
     compute_data_metrics,
     compute_throughout_metrics,
@@ -421,7 +422,7 @@ class RayPPOTrainer:
 
         lines = []
         for i in range(n):
-            entry = {k: v[i] for k, v in base_data.items()}
+            entry = {k: make_json_serializable(v[i]) for k, v in base_data.items()}
             lines.append(json.dumps(entry, ensure_ascii=False))
 
         with open(filename, "w") as f:
@@ -447,7 +448,7 @@ class RayPPOTrainer:
 
             reward_extra_infos_to_dump = reward_extra_infos_dict.copy()
             if "request_id" in batch.non_tensor_batch:
-                reward_extra_infos_dict.setdefault(
+                reward_extra_infos_to_dump.setdefault(
                     "request_id",
                     batch.non_tensor_batch["request_id"].tolist(),
                 )
@@ -528,7 +529,8 @@ class RayPPOTrainer:
 
     def _validate(self, merged: bool = False):
         data_source_lst = []
-        reward_extra_infos_dict: dict[str, list] = defaultdict(list)
+        reward_metric_infos_dict: dict[str, list] = defaultdict(list)
+        reward_dump_infos_dict: dict[str, list] = defaultdict(list)
 
         # Lists to collect samples for the table
         sample_inputs = []
@@ -604,18 +606,26 @@ class RayPPOTrainer:
 
             # evaluate using reward_function
             reward_tensor, reward_extra_info = extract_reward(test_batch)
+            # 训练和验证共用同一套 reward 后处理逻辑，确保验证主分数与训练更新目标一致。
+            reward_postprocess_result = postprocess_reward(
+                batch=test_batch,
+                raw_reward_tensor=reward_tensor,
+                reward_extra_infos_dict=reward_extra_info,
+                use_focal=self.config.algorithm.get("use_focal", False),
+                focal_config=self.config.algorithm.get("focal", {}),
+            )
+            reward_tensor = reward_postprocess_result.reward_tensor
+            if reward_postprocess_result.derived_extra_info:
+                test_batch.non_tensor_batch.update(reward_postprocess_result.derived_extra_info)
 
             scores = reward_tensor.sum(-1).cpu().tolist()
             sample_scores.extend(scores)
 
-            reward_extra_infos_dict["reward"].extend(scores)
-            for key, values in reward_extra_info.items():
-                if key not in reward_extra_infos_dict:
-                    reward_extra_infos_dict[key] = []
-                if isinstance(values, np.ndarray):
-                    reward_extra_infos_dict[key].extend(values.tolist())
-                else:
-                    reward_extra_infos_dict[key].extend(values if isinstance(values, list) else [values])
+            reward_metric_infos_dict["reward"].extend(scores)
+            for key, values in reward_postprocess_result.validation_extra_info.items():
+                reward_metric_infos_dict[key].extend(values)
+            for key, values in reward_postprocess_result.dump_extra_info.items():
+                reward_dump_infos_dict[key].extend(values)
 
             # collect num_turns of each prompt
             if "__num_turns__" in test_batch.non_tensor_batch:
@@ -633,11 +643,11 @@ class RayPPOTrainer:
                 outputs=sample_outputs,
                 gts=sample_gts,
                 scores=sample_scores,
-                reward_extra_infos_dict=reward_extra_infos_dict,
+                reward_extra_infos_dict=reward_dump_infos_dict,
                 dump_path=val_data_dir,
             )
 
-        for key_info, lst in reward_extra_infos_dict.items():
+        for key_info, lst in reward_metric_infos_dict.items():
             assert len(lst) == 0 or len(lst) == len(sample_scores), f"{key_info}: {len(lst)=}, {len(sample_scores)=}"
 
         if merged:
@@ -646,10 +656,10 @@ class RayPPOTrainer:
                 "data_sources": data_source_lst,
                 "sample_uids": sample_uids,
                 "sample_turns": sample_turns,
-                "reward_extra_infos_dict": reward_extra_infos_dict,
+                "reward_extra_infos_dict": reward_metric_infos_dict,
             }
         data_sources = np.concatenate(data_source_lst, axis=0)
-        return self._val_metrics_update(data_sources, sample_uids, reward_extra_infos_dict, sample_turns)
+        return self._val_metrics_update(data_sources, sample_uids, reward_metric_infos_dict, sample_turns)
 
     def _val_metrics_update(self, data_sources, sample_uids, reward_extra_infos_dict, sample_turns):
         data_src2var2metric2val = process_validation_metrics(data_sources, sample_uids, reward_extra_infos_dict)
@@ -1493,6 +1503,21 @@ class RayPPOTrainer:
                         # genrm 后处理需要在这里之前!
                         # extract reward_tensor and reward_extra_infos_dict for training
                         reward_tensor, reward_extra_infos_dict = extract_reward(batch)
+                        with marked_timer("reward_postprocess", timing_raw, color="magenta"):
+                            # 这里把 reward client 的多维信号聚合成 PPO 真正使用的最终 reward，
+                            # 同时把可追踪的标量字段透传回 batch，供 metrics / validation / dump 复用。
+                            reward_postprocess_result = postprocess_reward(
+                                batch=batch,
+                                raw_reward_tensor=reward_tensor,
+                                reward_extra_infos_dict=reward_extra_infos_dict,
+                                use_focal=self.config.algorithm.get("use_focal", False),
+                                focal_config=self.config.algorithm.get("focal", {}),
+                            )
+                        reward_tensor = reward_postprocess_result.reward_tensor
+                        reward_dump_infos_dict = reward_postprocess_result.dump_extra_info
+                        if reward_postprocess_result.derived_extra_info:
+                            batch.non_tensor_batch.update(reward_postprocess_result.derived_extra_info)
+                        metrics.update(reward_postprocess_result.metrics)
 
                     # Operating Mode Selection:  # 操作模式选择
                     # - Bypass mode: Sets old_log_probs = rollout_log_probs (2 policies: π_rollout, π_θ)  # 绕过模式：将旧对数概率设为rollout对数概率（两个策略：π_rollout, π_θ）
@@ -1556,12 +1581,8 @@ class RayPPOTrainer:
                             batch = batch.union(values)
 
                     with marked_timer("adv", timing_raw, color="brown"):
-                        # we combine with rule-based rm
-                        reward_extra_infos_dict: dict[str, list]
+                        # `reward_tensor` 已经是 postprocess 后的最终训练分数，不再直接使用原始 rm_scores。
                         batch.batch["token_level_scores"] = reward_tensor
-
-                        if reward_extra_infos_dict:
-                            batch.non_tensor_batch.update({k: np.array(v) for k, v in reward_extra_infos_dict.items()})
 
                         # compute rewards. apply_kl_penalty if available
                         if self.config.algorithm.use_kl_in_reward:
@@ -1650,7 +1671,7 @@ class RayPPOTrainer:
                     # Log rollout generations if enabled
                     rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)
                     if rollout_data_dir:
-                        self._log_rollout_data(batch, reward_extra_infos_dict, timing_raw, rollout_data_dir)
+                        self._log_rollout_data(batch, reward_dump_infos_dict, timing_raw, rollout_data_dir)
 
                 # validate
                 if self.config.trainer.test_freq > 0 and (
