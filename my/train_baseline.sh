@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
-# cd /inspire/hdd/global_user/gexinmu-253108100065/Repos/verl; conda_activate frontrl; nohup bash my/train_single_focal_4xh100.sh >> fix_focal_q34.log 2>&1 &
+# Baseline run for comparison with `my/train_focal.sh`.
+# This keeps the same data/model/training setup, but disables focal aggregation.
 
 set -x
 
@@ -8,18 +9,14 @@ export REWARD_SERVER_URL="https://notebook-inspire.sii.edu.cn/ws-f4d69b29-e0a5-4
 
 MODEL_PATH="/inspire/hdd/global_user/gexinmu-253108100065/Resources/models/LLMs/Qwen3-4B"
 PROJECT_NAME=frontend_focal
-EXPERIENT_NAME=focal_$(basename $MODEL_PATH)
+EXPERIENT_NAME=baseline_$(basename "$MODEL_PATH")
 
 export WANDB_API_KEY="a674dbfe0c02ecda3f0b81c159c04b4a851926cd"
 export WANDB_MODE="offline"
 
-# export OMP_NUM_THREADS=1
-# export MKL_NUM_THREADS=1
-# export OPENBLAS_NUM_THREADS=1
-
 python3 -m verl.trainer.main_ppo \
     trainer.rollout_data_dir=rollouts/$EXPERIENT_NAME \
-    algorithm.use_focal=True \
+    algorithm.use_focal=False \
     algorithm.focal.epsilon=0.05 \
     algorithm.focal.temperature=10.0 \
     algorithm.focal.gamma=3.0 \
@@ -68,16 +65,3 @@ python3 -m verl.trainer.main_ppo \
     data.val_max_samples=256 \
     trainer.val_before_train=True
 
-    # 核心瓶颈是 ppo_micro_batch_size_per_gpu!
-    # 在 max_len = prompt + response = 20480 的情况下, mbs = 8 大概率 OOM
-    # 因此可以退回 mbs = 4, 增大 gpu_mem_util 给 vllm 的 rollout 过程
-    # 对于 log_prob_micro_batch_size_per_gpu 按照保守来计算
-
-    # Qwen3-4B, 4xh100
-    # data.train_batch_size=64 \
-    # actor_rollout_ref.actor.ppo_mini_batch_size=64 \
-    # actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2 \
-    # actor_rollout_ref.rollout.gpu_memory_utilization=0.4 \
-    # actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=2 \
-    # actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=2 \
-    # actor_rollout_ref.rollout.tensor_model_parallel_size=4 \
