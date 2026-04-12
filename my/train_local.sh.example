@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+
+# Copy this file to `my/train_local.sh` and fill in your local values.
+# Keep `my/train_local.sh` untracked.
+
+export MODEL_PATH="/path/to/your/model"
+export REWARD_SERVER_URL="https://your-reward-server"
+export WANDB_API_KEY="your-wandb-api-key"
+export WANDB_MODE="offline"

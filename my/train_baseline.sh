@@ -5,13 +5,21 @@
 
 set -x
 
-export REWARD_SERVER_URL="https://notebook-inspire.sii.edu.cn/ws-f4d69b29-e0a5-44e6-bd92-acf4de9990f0/project-4493c9f7-2fbf-459a-ad90-749a5a420b91/user-1100adad-e6a6-4aef-8cf6-20c4582a539f/vscode/96870aa4-9f24-4218-8301-b5fac805ab88/4730f3d8-1c25-4cc6-afdc-48abf27c3dd8/proxy/48001/compute_reward_v2"
+LOCAL_CONFIG="${LOCAL_CONFIG:-my/train_local.sh}"
+if [ -f "$LOCAL_CONFIG" ]; then
+    # Local-only overrides live outside git. Keep this file untracked.
+    # shellcheck disable=SC1090
+    source "$LOCAL_CONFIG"
+fi
 
-MODEL_PATH="/inspire/hdd/global_user/gexinmu-253108100065/Resources/models/LLMs/Qwen3-4B"
-PROJECT_NAME=frontend_focal
+: "${MODEL_PATH:?Set MODEL_PATH in $LOCAL_CONFIG}"
+: "${PROJECT_NAME:=frontend_focal}"
+: "${REWARD_SERVER_URL:?Set REWARD_SERVER_URL in $LOCAL_CONFIG}"
+: "${WANDB_API_KEY:?Set WANDB_API_KEY in $LOCAL_CONFIG}"
+: "${WANDB_MODE:=offline}"
+
 EXPERIENT_NAME=baseline_$(basename "$MODEL_PATH")
 
-export WANDB_API_KEY="a674dbfe0c02ecda3f0b81c159c04b4a851926cd"
 export WANDB_MODE="offline"
 
 python3 -m verl.trainer.main_ppo \
@@ -64,4 +72,3 @@ python3 -m verl.trainer.main_ppo \
     trainer.test_freq=5 \
     data.val_max_samples=256 \
     trainer.val_before_train=True
-
