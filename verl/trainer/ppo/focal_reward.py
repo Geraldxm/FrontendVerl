@@ -342,6 +342,11 @@ def postprocess_reward(
         key="judge_info",
         expected_length=batch_size,
     )
+    error_messages = _to_list(
+        reward_extra_infos_dict.get("error_message", [""] * batch_size),
+        key="error_message",
+        expected_length=batch_size,
+    )
 
     # `signal_matrix` shape = [batch_size, num_signals]，是后面 direct/focal 聚合的基础。
     signal_keys = _infer_signal_keys(reward_signal_items)
@@ -469,11 +474,6 @@ def postprocess_reward(
     render_status_counts = defaultdict(int)
     judge_status_counts = defaultdict(int)
     error_message_counts = defaultdict(int)
-    error_messages = _to_list(
-        reward_extra_infos_dict.get("error_message", [""] * batch_size),
-        key="error_message",
-        expected_length=batch_size,
-    )
 
     def _normalize_error_message(error_message: Any) -> str:
         if error_message is None:
@@ -530,6 +530,62 @@ def postprocess_reward(
     mean_group_weights = np.mean(np.stack(group_weights, axis=0), axis=0)
     for signal_idx, signal_slug in enumerate(signal_slugs):
         metrics[f"reward_signals/{signal_slug}/focal_weight_mean"] = float(mean_group_weights[signal_idx])
+
+    # 为每条样本生成“归一化后的 focal 权重”视图，用于 dump 诊断。
+    # 对无效 group，使用全局均值权重兜底（与分数补偿口径一致）。
+    uid_to_group_weights: dict[Any, np.ndarray] = {}
+    for uid_value, group_indices in uid_to_indices.items():
+        group_valid_mask = valid_sample_mask[group_indices]
+        if np.any(group_valid_mask):
+            valid_group_signals = signal_matrix[group_indices][group_valid_mask]
+            group_score_result = _compute_group_focal_scores(
+                signal_matrix=valid_group_signals,
+                base_weights=base_weights,
+                temperature=temperature,
+                gamma=gamma,
+                epsilon=epsilon,
+            )
+            uid_to_group_weights[uid_value] = group_score_result["normalized_focal_weights"]
+        else:
+            uid_to_group_weights[uid_value] = mean_group_weights
+
+    focal_weight_dicts: list[dict[str, float]] = []
+    for uid_value in uid_values:
+        group_weights_vec = uid_to_group_weights[uid_value]
+        focal_weight_dicts.append(
+            {signal_slug: float(group_weights_vec[idx]) for idx, signal_slug in enumerate(signal_slugs)}
+        )
+
+    # 结构化的 dump 字段，减少扁平 key 的混乱度。
+    # 保持旧字段兼容的同时，新增 `reward_detail` 供调试直接读取。
+    reward_detail: list[dict[str, Any]] = []
+    for idx in range(batch_size):
+        reward_detail.append(
+            {
+                "scores": {
+                    "raw": float(raw_scores[idx]),
+                    "direct": float(direct_scores[idx]),
+                    "focal": float(focal_scores[idx]),
+                    "final": float(final_scores[idx]),
+                },
+                "signals": {
+                    signal_slug: float(signal_matrix[idx, signal_i])
+                    for signal_i, signal_slug in enumerate(signal_slugs)
+                },
+                "focal_weights": focal_weight_dicts[idx],
+                "status": {
+                    "overall": overall_statuses[idx],
+                    "error_message": error_messages[idx],
+                    "render": render_infos[idx],
+                    "judge": judge_infos[idx],
+                },
+                "valid_sample": int(valid_sample_mask[idx]),
+                "is_llm_generation_error": int(llm_generation_error_mask[idx]),
+            }
+        )
+
+    dump_extra_info["reward_detail"] = [make_json_serializable(item) for item in reward_detail]
+    dump_extra_info["reward_focal_weights"] = focal_weight_dicts
 
     return RewardPostprocessResult(
         reward_tensor=reward_tensor,

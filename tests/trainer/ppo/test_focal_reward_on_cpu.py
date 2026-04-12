@@ -185,8 +185,12 @@ class TestFocalRewardPostprocess(unittest.TestCase):
         np.testing.assert_array_equal(result.derived_extra_info["reward_valid_sample"], np.asarray([1, 1, 1, 0]))
         np.testing.assert_array_equal(result.derived_extra_info["reward_is_llm_generation_error"], np.asarray([0, 1, 0, 0]))
         self.assertAlmostEqual(result.derived_extra_info["reward_signal_color_scheme"][1], 0.0)
-        self.assertAlmostEqual(result.metrics["reward/status/llm_generation_error/count"], 1.0)
-        self.assertAlmostEqual(result.metrics["reward/signals/color_scheme"], (10.0 + 0.0 + 6.0) / 3.0)
+        self.assertAlmostEqual(
+            result.metrics["reward_status/overall_status/llm_generation_error/rate"], 0.25, places=6
+        )
+        self.assertAlmostEqual(
+            result.metrics["reward_signals/color_scheme/mean"], (10.0 + 0.0 + 6.0) / 3.0, places=6
+        )
         np.testing.assert_allclose(
             result.reward_tensor.sum(-1).cpu().numpy(),
             expected_direct_scores,
