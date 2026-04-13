@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
 
-# cd /inspire/hdd/global_user/gexinmu-253108100065/Repos/verl; conda_activate frontrl; nohup bash my/train_single_focal_4xh100.sh >> fix_focal_q34.log 2>&1 &
-
 set -x
 
 LOCAL_CONFIG="${LOCAL_CONFIG:-my/train_local.sh}"
@@ -11,15 +9,14 @@ if [ -f "$LOCAL_CONFIG" ]; then
     source "$LOCAL_CONFIG"
 fi
 
+export REWARD_SERVER_URL="http://10.244.232.168:48001/compute_reward_v2"
+
 : "${MODEL_PATH:?Set MODEL_PATH in $LOCAL_CONFIG}"
 : "${PROJECT_NAME:=frontend_focal}"
-: "${REWARD_SERVER_URL:?Set REWARD_SERVER_URL in $LOCAL_CONFIG}"
 : "${WANDB_API_KEY:?Set WANDB_API_KEY in $LOCAL_CONFIG}"
 : "${WANDB_MODE:=offline}"
 
-EXPERIENT_NAME=focal_$(basename $MODEL_PATH)
-
-export WANDB_MODE="offline"
+EXPERIENT_NAME=focal_3_$(basename $MODEL_PATH)
 
 python3 -m verl.trainer.main_ppo \
     trainer.rollout_data_dir=rollouts/$EXPERIENT_NAME \
@@ -32,8 +29,8 @@ python3 -m verl.trainer.main_ppo \
     reward.custom_reward_function.name=compute_score \
     reward.reward_model.enable=False \
     algorithm.adv_estimator=grpo \
-    data.train_files=my/data/regenerated_seq_train_with_checklist.parquet \
-    data.val_files=my/data/regenerated_seq_test_with_checklist.parquet \
+    data.train_files=my/data/websight_train_2k_nothink.parquet \
+    data.val_files=my/data/websight_val_2k_nothink.parquet \
     data.train_batch_size=64 \
     actor_rollout_ref.actor.ppo_mini_batch_size=64 \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2 \
@@ -69,8 +66,9 @@ python3 -m verl.trainer.main_ppo \
     trainer.save_freq=5 \
     trainer.total_epochs=3 \
     trainer.test_freq=5 \
-    data.val_max_samples=256 \
     trainer.val_before_train=True
+    
+    # data.val_max_samples=256 \
 
     # 核心瓶颈是 ppo_micro_batch_size_per_gpu!
     # 在 max_len = prompt + response = 20480 的情况下, mbs = 8 大概率 OOM

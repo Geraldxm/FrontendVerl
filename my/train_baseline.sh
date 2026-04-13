@@ -12,15 +12,14 @@ if [ -f "$LOCAL_CONFIG" ]; then
     source "$LOCAL_CONFIG"
 fi
 
+export REWARD_SERVER_URL="http://10.244.163.154:48001/compute_reward_v2"
+
 : "${MODEL_PATH:?Set MODEL_PATH in $LOCAL_CONFIG}"
 : "${PROJECT_NAME:=frontend_focal}"
-: "${REWARD_SERVER_URL:?Set REWARD_SERVER_URL in $LOCAL_CONFIG}"
 : "${WANDB_API_KEY:?Set WANDB_API_KEY in $LOCAL_CONFIG}"
 : "${WANDB_MODE:=offline}"
 
-EXPERIENT_NAME=baseline_$(basename "$MODEL_PATH")
-
-export WANDB_MODE="offline"
+EXPERIENT_NAME=baseline_3_$(basename "$MODEL_PATH")
 
 python3 -m verl.trainer.main_ppo \
     trainer.rollout_data_dir=rollouts/$EXPERIENT_NAME \
@@ -33,8 +32,8 @@ python3 -m verl.trainer.main_ppo \
     reward.custom_reward_function.name=compute_score \
     reward.reward_model.enable=False \
     algorithm.adv_estimator=grpo \
-    data.train_files=my/data/regenerated_seq_train_with_checklist.parquet \
-    data.val_files=my/data/regenerated_seq_test_with_checklist.parquet \
+    data.train_files=my/data/websight_train_2k_nothink.parquet \
+    data.val_files=my/data/websight_val_2k_nothink.parquet \
     data.train_batch_size=64 \
     actor_rollout_ref.actor.ppo_mini_batch_size=64 \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2 \
@@ -70,5 +69,4 @@ python3 -m verl.trainer.main_ppo \
     trainer.save_freq=5 \
     trainer.total_epochs=3 \
     trainer.test_freq=5 \
-    data.val_max_samples=256 \
     trainer.val_before_train=True
