@@ -267,6 +267,11 @@ async def compute_score(
         # 该返回表示失败; 下游应将其视为 request_error，不再继续按服务端业务状态处理。
         return _build_request_error_result(error_message=extra_info_error)
 
+    # 允许调用方通过 kwargs 透传当前训练步数，便于服务端做分步诊断或策略分流。
+    step_value = kwargs.get("step", kwargs.get("global_steps"))
+    if step_value is not None and "step" not in normalized_extra_info:
+        normalized_extra_info["step"] = _convert_to_serializable(obj=step_value)
+
     payload = _build_payload(
         data_source=data_source,
         solution_str=solution_str,

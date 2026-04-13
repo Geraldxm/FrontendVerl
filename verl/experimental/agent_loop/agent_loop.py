@@ -657,7 +657,9 @@ class AgentLoopWorker:
                 data_config=DictConfigWrap(self.config.data),
             )
             output: AgentLoopOutput = await agent_loop.run(sampling_params, **kwargs)
-            return await self._agent_loop_postprocess(output, trajectory["validate"], **kwargs)
+            postprocess_kwargs = dict(kwargs)
+            postprocess_kwargs.setdefault("global_steps", trajectory["step"])
+            return await self._agent_loop_postprocess(output, trajectory["validate"], **postprocess_kwargs)
 
     # 调用 self._compute_score, 目的是将 reward 信息插回 output
     # output.reward_score = result["reward_score"]
