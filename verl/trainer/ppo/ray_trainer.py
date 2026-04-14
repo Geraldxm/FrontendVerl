@@ -232,6 +232,133 @@ def compute_advantage(
     return data
 
 
+def _get_dump_sample_value(*, values: Any, index: int, default: Any) -> Any:
+    """
+    输入: 按样本对齐的 list-like 字段、样本下标和默认值。
+    输出: 当前样本对应的字段值；越界或类型不匹配时返回默认值。
+    边界: 这里只服务 JSONL 落盘，不影响训练侧数据流。
+    """
+    if isinstance(values, list) and 0 <= index < len(values):
+        return values[index]
+    return default
+
+
+def _build_generation_dump_entry(
+    *,
+    input_text: Any,
+    output_text: Any,
+    gt_text: Any,
+    step: Any,
+    reward_extra_infos_dict: dict[str, list[Any]],
+    index: int,
+) -> dict[str, Any]:
+    """
+    输入: 单条样本的基础文本字段与按样本对齐的 reward dump 信息。
+    输出: 只包含 JSONL 需要的 10 个顶层字段的结构化记录。
+    边界: 该函数只负责落盘结构重组，不参与 reward 计算或训练逻辑。
+    """
+    reward_detail = _get_dump_sample_value(
+        values=reward_extra_infos_dict.get("reward_detail"),
+        index=index,
+        default={},
+    )
+    status_detail = reward_detail.get("status", {}) if isinstance(reward_detail, dict) else {}
+    reward_scores = {
+        "raw": float(
+            _get_dump_sample_value(
+                values=reward_extra_infos_dict.get("reward_raw_score"),
+                index=index,
+                default=0.0,
+            )
+        ),
+        "direct": float(
+            _get_dump_sample_value(
+                values=reward_extra_infos_dict.get("reward_direct_score"),
+                index=index,
+                default=0.0,
+            )
+        ),
+        "focal": float(
+            _get_dump_sample_value(
+                values=reward_extra_infos_dict.get("reward_focal_score"),
+                index=index,
+                default=0.0,
+            )
+        ),
+        "final": float(
+            _get_dump_sample_value(
+                values=reward_extra_infos_dict.get("reward_final_score"),
+                index=index,
+                default=0.0,
+            )
+        ),
+        "valid_sample": int(
+            _get_dump_sample_value(
+                values=reward_extra_infos_dict.get("reward_valid_sample"),
+                index=index,
+                default=0,
+            )
+        ),
+        "is_llm_generation_error": int(
+            _get_dump_sample_value(
+                values=reward_extra_infos_dict.get("reward_is_llm_generation_error"),
+                index=index,
+                default=0,
+            )
+        ),
+    }
+
+    reward_signals = _get_dump_sample_value(
+        values=reward_extra_infos_dict.get("reward_signals"),
+        index=index,
+        default=reward_detail.get("signals", {}) if isinstance(reward_detail, dict) else {},
+    )
+    focal_weights = _get_dump_sample_value(
+        values=reward_extra_infos_dict.get("reward_focal_weights"),
+        index=index,
+        default=reward_detail.get("focal_weights", {}) if isinstance(reward_detail, dict) else {},
+    )
+    overall_status = _get_dump_sample_value(
+        values=reward_extra_infos_dict.get("overall_status"),
+        index=index,
+        default=status_detail.get("overall", "unknown"),
+    )
+    error_message = _get_dump_sample_value(
+        values=reward_extra_infos_dict.get("error_message"),
+        index=index,
+        default=status_detail.get("error_message", ""),
+    )
+
+    render_info = _get_dump_sample_value(
+        values=reward_extra_infos_dict.get("render_info"),
+        index=index,
+        default=status_detail.get("render", {}),
+    )
+    judge_info = _get_dump_sample_value(
+        values=reward_extra_infos_dict.get("judge_info"),
+        index=index,
+        default=status_detail.get("judge", {}),
+    )
+
+    return {
+        "input": make_json_serializable(input_text),
+        "output": make_json_serializable(output_text),
+        "gts": make_json_serializable(gt_text),
+        "step": make_json_serializable(step),
+        "reward_scores": make_json_serializable(reward_scores),
+        "reward_signals": make_json_serializable(reward_signals),
+        "focal_weights": make_json_serializable(focal_weights),
+        "status": make_json_serializable(
+            {
+                "overall": overall_status,
+                "error_message": error_message,
+            }
+        ),
+        "render_info": make_json_serializable(render_info),
+        "judge_info": make_json_serializable(judge_info),
+    }
+
+
 class RayPPOTrainer:
     """Distributed PPO trainer using Ray for scalable reinforcement learning.
 
@@ -408,21 +535,16 @@ class RayPPOTrainer:
         filename = os.path.join(dump_path, f"{self.global_steps}.jsonl")
 
         n = len(inputs)
-        base_data = {
-            "input": inputs,
-            "output": outputs,
-            "gts": gts,
-            "score": scores,
-            "step": [self.global_steps] * n,
-        }
-
-        for k, v in reward_extra_infos_dict.items():
-            if len(v) == n:
-                base_data[k] = v
-
         lines = []
         for i in range(n):
-            entry = {k: make_json_serializable(v[i]) for k, v in base_data.items()}
+            entry = _build_generation_dump_entry(
+                input_text=inputs[i],
+                output_text=outputs[i],
+                gt_text=gts[i],
+                step=self.global_steps,
+                reward_extra_infos_dict=reward_extra_infos_dict,
+                index=i,
+            )
             lines.append(json.dumps(entry, ensure_ascii=False))
 
         with open(filename, "w") as f:
