@@ -28,6 +28,7 @@ per rollout group, and returns:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections import defaultdict
@@ -64,6 +65,19 @@ def slugify_reward_name(name: str) -> str:
     """
     slug = re.sub(r"[^0-9a-zA-Z]+", "_", name.strip().lower()).strip("_")
     return slug or "unknown"
+
+
+def compact_metric_slug(name: str, *, max_len: int = 180) -> str:
+    """
+    Convert an arbitrary metric name to a bounded-length slug.
+    Keep a hash suffix when truncation happens to preserve uniqueness.
+    """
+    slug = slugify_reward_name(name)
+    if len(slug) <= max_len:
+        return slug
+    digest = hashlib.sha1(slug.encode("utf-8")).hexdigest()[:12]
+    head_len = max(1, max_len - len("_sha1_") - len(digest))
+    return f"{slug[:head_len]}_sha1_{digest}"
 
 
 def make_json_serializable(obj: Any) -> Any:
@@ -476,22 +490,32 @@ def postprocess_reward(
     error_message_counts = defaultdict(int)
 
     def _normalize_error_message(error_message: Any) -> str:
+        def _finalize_error_text(text: str) -> str:
+            cleaned = text.strip()
+            if not cleaned:
+                return "none"
+            # Avoid exploding metric-key length when image payload/base64 is present.
+            cleaned = re.sub(r"data:image/[^\\s\"']+", "data_image_payload_omitted", cleaned, flags=re.IGNORECASE)
+            max_chars = 512
+            if len(cleaned) > max_chars:
+                digest = hashlib.sha1(cleaned.encode("utf-8")).hexdigest()[:12]
+                cleaned = f"{cleaned[:max_chars]}_sha1_{digest}"
+            return cleaned
+
         if error_message is None:
             return "none"
         if isinstance(error_message, str):
-            stripped = error_message.strip()
-            return stripped if stripped else "none"
+            return _finalize_error_text(error_message)
         if isinstance(error_message, dict):
             for key in ("message", "error", "status"):
                 value = error_message.get(key)
                 if value is not None and str(value).strip():
-                    return str(value).strip()
+                    return _finalize_error_text(str(value))
         try:
             serialized = json.dumps(make_json_serializable(error_message), sort_keys=True)
-            return serialized if serialized else "none"
+            return _finalize_error_text(serialized)
         except TypeError:
-            fallback = str(error_message).strip()
-            return fallback if fallback else "none"
+            return _finalize_error_text(str(error_message))
 
     for overall_status, render_info, judge_info in zip(overall_statuses, render_infos, judge_infos, strict=True):
         overall_status_counts[str(overall_status)] += 1
@@ -506,7 +530,7 @@ def postprocess_reward(
         status_slug = slugify_reward_name(status)
         metrics[f"reward_status/overall_status/{status_slug}/rate"] = float(count / batch_size)
     for error_message, count in error_message_counts.items():
-        error_slug = slugify_reward_name(error_message)
+        error_slug = compact_metric_slug(error_message, max_len=180)
         metrics[f"reward_status/error_message/{error_slug}/rate"] = float(count / batch_size)
     for status, count in render_status_counts.items():
         status_slug = slugify_reward_name(status)
