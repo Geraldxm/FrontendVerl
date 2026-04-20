@@ -191,6 +191,14 @@ class TestFocalRewardPostprocess(unittest.TestCase):
         self.assertAlmostEqual(
             result.metrics["reward_signals/color_scheme/mean"], (10.0 + 0.0 + 6.0) / 3.0, places=6
         )
+        self.assertIn("reward_weights/color_scheme/mean", result.metrics)
+        self.assertIn("reward_others/max/color_scheme", result.metrics)
+        self.assertIn("reward_others/min/color_scheme", result.metrics)
+        self.assertIn("reward_others/var/color_scheme", result.metrics)
+        self.assertIn("reward_signals/color_scheme/focal_weight_mean", result.metrics)
+        self.assertNotIn("reward_signals/color_scheme/max", result.metrics)
+        self.assertNotIn("reward_signals/color_scheme/min", result.metrics)
+        self.assertNotIn("reward_signals/color_scheme/var", result.metrics)
         np.testing.assert_allclose(
             result.reward_tensor.sum(-1).cpu().numpy(),
             expected_direct_scores,
@@ -378,6 +386,8 @@ class TestFocalRewardPostprocess(unittest.TestCase):
         self.assertNotIn("reward_signals", result.validation_extra_info)
         self.assertNotIn("render_info", result.validation_extra_info)
         self.assertIn("reward_signals", result.dump_extra_info)
+        self.assertIn("reward_weights", result.dump_extra_info)
+        self.assertIn("reward_others", result.dump_extra_info)
         self.assertIn("render_info", result.dump_extra_info)
 
         infos_dict = {"reward": result.reward_tensor.sum(-1).cpu().tolist(), **result.validation_extra_info}

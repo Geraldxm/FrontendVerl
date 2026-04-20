@@ -44,6 +44,20 @@ class RayTrainerDumpTest(unittest.TestCase):
                     "network_violations": 0.7,
                 }
             ],
+            "reward_weights": [
+                {
+                    "format_score": 0.1,
+                    "console_errors": 0.2,
+                    "network_violations": 0.7,
+                }
+            ],
+            "reward_others": [
+                {
+                    "max": {"format_score": 10.0, "console_errors": 8.0, "network_violations": 10.0},
+                    "min": {"format_score": 10.0, "console_errors": 8.0, "network_violations": 10.0},
+                    "var": {"format_score": 0.0, "console_errors": 0.0, "network_violations": 0.0},
+                }
+            ],
             "overall_status": ["success"],
             "error_message": [""],
             "render_info": [{"status": "success", "details": {"desktop": "ok"}}],
@@ -54,6 +68,8 @@ class RayTrainerDumpTest(unittest.TestCase):
                     "scores": {"raw": 0.0, "direct": 5.8181818, "focal": 2.337951, "final": 5.8181818},
                     "signals": {"format_score": 10.0},
                     "focal_weights": {"format_score": 0.1},
+                    "reward_weights": {"format_score": 0.1},
+                    "reward_others": {"max": {"format_score": 10.0}, "min": {"format_score": 10.0}, "var": {"format_score": 0.0}},
                     "status": {
                         "overall": "success",
                         "error_message": "",
@@ -94,6 +110,8 @@ class RayTrainerDumpTest(unittest.TestCase):
                 "step",
                 "reward_scores",
                 "reward_signals",
+                "reward_weights",
+                "reward_others",
                 "focal_weights",
                 "status",
                 "render_info",
@@ -125,6 +143,22 @@ class RayTrainerDumpTest(unittest.TestCase):
                 },
             )
             self.assertEqual(
+                row["reward_weights"],
+                {
+                    "format_score": 0.1,
+                    "console_errors": 0.2,
+                    "network_violations": 0.7,
+                },
+            )
+            self.assertEqual(
+                row["reward_others"],
+                {
+                    "max": {"format_score": 10.0, "console_errors": 8.0, "network_violations": 10.0},
+                    "min": {"format_score": 10.0, "console_errors": 8.0, "network_violations": 10.0},
+                    "var": {"format_score": 0.0, "console_errors": 0.0, "network_violations": 0.0},
+                },
+            )
+            self.assertEqual(
                 row["focal_weights"],
                 {
                     "format_score": 0.1,
@@ -132,6 +166,7 @@ class RayTrainerDumpTest(unittest.TestCase):
                     "network_violations": 0.7,
                 },
             )
+            self.assertEqual(row["focal_weights"], row["reward_weights"])
             self.assertEqual(row["status"], {"overall": "success", "error_message": ""})
             self.assertEqual(row["render_info"]["details"]["desktop"], "ok")
             self.assertEqual(row["judge_info"]["response"], "fine")

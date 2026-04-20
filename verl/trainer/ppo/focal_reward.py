@@ -571,10 +571,19 @@ def postprocess_reward(
     metrics["reward_status/valid_group/rate"] = float(len(group_weights) / max(1, len(uid_to_indices)))
 
     for signal_idx, signal_slug in enumerate(signal_slugs):
-        metrics.update(_distribution_metrics(f"reward_signals/{signal_slug}", valid_signal_matrix[:, signal_idx]))
+        signal_values = valid_signal_matrix[:, signal_idx]
+        # 主面板只保留 signal mean，减少 reward_signals 分组下图表数量。
+        metrics[f"reward_signals/{signal_slug}/mean"] = float(np.mean(signal_values))
+        # 诊断统计分流到 reward_others 分组。
+        metrics[f"reward_others/max/{signal_slug}"] = float(np.max(signal_values))
+        metrics[f"reward_others/min/{signal_slug}"] = float(np.min(signal_values))
+        metrics[f"reward_others/var/{signal_slug}"] = float(np.var(signal_values))
 
     for signal_idx, signal_slug in enumerate(signal_slugs):
-        metrics[f"reward_signals/{signal_slug}/focal_weight_mean"] = float(mean_group_weights[signal_idx])
+        weight_mean = float(mean_group_weights[signal_idx])
+        metrics[f"reward_weights/{signal_slug}/mean"] = weight_mean
+        # 兼容旧 key：保留 focal_weight_mean 以避免旧看板断裂。
+        metrics[f"reward_signals/{signal_slug}/focal_weight_mean"] = weight_mean
 
     # 为每条样本生成 group 级聚合视图：
     # reward_signals: 11 个信号的当前组均分；

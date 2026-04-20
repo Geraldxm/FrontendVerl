@@ -254,7 +254,7 @@ def _build_generation_dump_entry(
 ) -> dict[str, Any]:
     """
     输入: 单条样本的基础文本字段与按样本对齐的 reward dump 信息。
-    输出: 只包含 JSONL 需要的 10 个顶层字段的结构化记录。
+    输出: JSONL 需要的结构化记录（含 reward 新旧字段兼容别名）。
     边界: 该函数只负责落盘结构重组，不参与 reward 计算或训练逻辑。
     """
     reward_detail = _get_dump_sample_value(
@@ -313,11 +313,24 @@ def _build_generation_dump_entry(
         index=index,
         default=reward_detail.get("signals", {}) if isinstance(reward_detail, dict) else {},
     )
-    focal_weights = _get_dump_sample_value(
-        values=reward_extra_infos_dict.get("reward_focal_weights"),
+    reward_weights = _get_dump_sample_value(
+        values=reward_extra_infos_dict.get("reward_weights"),
         index=index,
-        default=reward_detail.get("focal_weights", {}) if isinstance(reward_detail, dict) else {},
+        default=_get_dump_sample_value(
+            values=reward_extra_infos_dict.get("reward_focal_weights"),
+            index=index,
+            default=reward_detail.get("reward_weights", reward_detail.get("focal_weights", {}))
+            if isinstance(reward_detail, dict)
+            else {},
+        ),
     )
+    reward_others = _get_dump_sample_value(
+        values=reward_extra_infos_dict.get("reward_others"),
+        index=index,
+        default=reward_detail.get("reward_others", {}) if isinstance(reward_detail, dict) else {},
+    )
+    # 兼容旧字段 focal_weights：保持与 reward_weights 同值。
+    focal_weights = reward_weights
     overall_status = _get_dump_sample_value(
         values=reward_extra_infos_dict.get("overall_status"),
         index=index,
@@ -347,6 +360,8 @@ def _build_generation_dump_entry(
         "step": make_json_serializable(step),
         "reward_scores": make_json_serializable(reward_scores),
         "reward_signals": make_json_serializable(reward_signals),
+        "reward_weights": make_json_serializable(reward_weights),
+        "reward_others": make_json_serializable(reward_others),
         "focal_weights": make_json_serializable(focal_weights),
         "status": make_json_serializable(
             {
