@@ -33,6 +33,8 @@ DRY_RUN="false"
 # You can keep experiments here, or pass --experiment multiple times.
 EXPERIMENTS=()
 
+SKIPPED_STEPS=()
+
 usage() {
   cat <<'USAGE'
 Usage:
@@ -229,7 +231,11 @@ run_merge_one_step() {
   local step="$2"
 
   local local_dir="$INPUT_ROOT/$PROJECT_NAME/$exp_name/global_step_${step}/$ROLE"
-  [[ -d "$local_dir" ]] || die "Checkpoint role dir not found: $local_dir"
+  if [[ ! -d "$local_dir" ]]; then
+    log "Skip missing checkpoint: $local_dir"
+    SKIPPED_STEPS+=("$exp_name:global_step_$step")
+    return 0
+  fi
 
   local backend="$BACKEND"
   if [[ "$backend" == "auto" ]]; then
@@ -289,6 +295,13 @@ main() {
   done
 
   log "Done. Processed $merged_count step(s)."
+
+  if [[ ${#SKIPPED_STEPS[@]} -gt 0 ]]; then
+    log "Skipped ${#SKIPPED_STEPS[@]} step(s) due to missing checkpoints:"
+    for skipped in "${SKIPPED_STEPS[@]}"; do
+      log "  - $skipped"
+    done
+  fi
 }
 
 main "$@"
