@@ -91,6 +91,15 @@ Use concise Conventional Commits style: `type: details`.
 
 To reduce argument-order mistakes, prefer keyword arguments where practical.
 
+#### Focal reward logging convention
+
+When changing focal reward logging, keep W&B metrics group-level and rollout
+JSONL sample-level: use `group_reward_signal/*`, `group_focal_weight/*`, and
+`group_reward_others/*` for step summaries; use `sample_reward_signal`,
+`sample_reward_weight`, `group_mean_reward_signal`, and
+`group_mean_reward_weight` in rollouts. Do not reintroduce ambiguous rollout
+top-level `reward_signals` or `reward_weights`.
+
 ---
 
 ## Domain-Specific Guides

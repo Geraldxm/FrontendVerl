@@ -501,10 +501,12 @@ def postprocess_reward(
     dump_extra_info["reward"] = final_scores.tolist()
 
     # Metrics blocks:
-    # 1) reward_signals/*:   各 reward signal 的分布统计与 focal 权重
-    # 2) reward_status/*:    overall_status / error_message / 核心 reward 分数摘要
-    # 3) render_status/*:    render 阶段状态占比
-    # 4) judge_status/*:     judge 阶段状态占比
+    # 1) group_reward_signal/*: group mean reward signal summary
+    # 2) group_focal_weight/*:  group focal rubric weight summary
+    # 3) group_reward_others/*: group mean reward signal max/min/var
+    # 4) reward_status/*:       overall_status / error_message / 核心 reward 分数摘要
+    # 5) render_status/*:       render 阶段状态占比
+    # 6) judge_status/*:        judge 阶段状态占比
     # 离散状态类指标统一只打 rate，不再打 count，便于面板阅读。
     metrics = {}
     overall_status_counts = defaultdict(int)
@@ -570,20 +572,15 @@ def postprocess_reward(
     metrics["reward_status/llm_generation_error/rate"] = float(np.mean(llm_generation_error_mask.astype(np.float64)))
     metrics["reward_status/valid_group/rate"] = float(len(group_weights) / max(1, len(uid_to_indices)))
 
+    group_signal_means = np.stack([stats["mean"] for stats in uid_group_signal_stats.values()], axis=0)
+    group_focal_weights = np.stack([stats["weights"] for stats in uid_group_signal_stats.values()], axis=0)
     for signal_idx, signal_slug in enumerate(signal_slugs):
-        signal_values = valid_signal_matrix[:, signal_idx]
-        # 主面板只保留 signal mean，减少 reward_signals 分组下图表数量。
-        metrics[f"reward_signals/{signal_slug}/mean"] = float(np.mean(signal_values))
-        # 诊断统计分流到 reward_others 分组。
-        metrics[f"reward_others/max/{signal_slug}"] = float(np.max(signal_values))
-        metrics[f"reward_others/min/{signal_slug}"] = float(np.min(signal_values))
-        metrics[f"reward_others/var/{signal_slug}"] = float(np.var(signal_values))
-
-    for signal_idx, signal_slug in enumerate(signal_slugs):
-        weight_mean = float(mean_group_weights[signal_idx])
-        metrics[f"reward_weights/{signal_slug}/mean"] = weight_mean
-        # 兼容旧 key：保留 focal_weight_mean 以避免旧看板断裂。
-        metrics[f"reward_signals/{signal_slug}/focal_weight_mean"] = weight_mean
+        group_signal_values = group_signal_means[:, signal_idx]
+        metrics[f"group_reward_signal/{signal_slug}/mean"] = float(np.mean(group_signal_values))
+        metrics[f"group_reward_others/max/{signal_slug}"] = float(np.max(group_signal_values))
+        metrics[f"group_reward_others/min/{signal_slug}"] = float(np.min(group_signal_values))
+        metrics[f"group_reward_others/var/{signal_slug}"] = float(np.var(group_signal_values))
+        metrics[f"group_focal_weight/{signal_slug}/mean"] = float(np.mean(group_focal_weights[:, signal_idx]))
 
     # 为每条样本生成 dump 视图：
     # group_mean_reward_signal: 当前组的 reward signal 均值；
@@ -629,15 +626,10 @@ def postprocess_reward(
                     "focal": float(focal_scores[idx]),
                     "final": float(final_scores[idx]),
                 },
-                "signals": sample_reward_signal_dicts[idx],
-                "focal_weights": sample_reward_weight_dicts[idx],
                 "sample_reward_signal": sample_reward_signal_dicts[idx],
                 "sample_reward_weight": sample_reward_weight_dicts[idx],
                 "group_mean_reward_signal": group_mean_reward_signal_dicts[idx],
                 "group_mean_reward_weight": group_mean_reward_weight_dicts[idx],
-                # Backward-compatible aliases for older rollout viewers/analysis scripts.
-                "reward_signals": group_mean_reward_signal_dicts[idx],
-                "reward_weights": group_mean_reward_weight_dicts[idx],
                 "reward_others": reward_others_dicts[idx],
                 "status": {
                     "overall": overall_statuses[idx],
@@ -655,10 +647,6 @@ def postprocess_reward(
     dump_extra_info["sample_reward_weight"] = sample_reward_weight_dicts
     dump_extra_info["group_mean_reward_signal"] = group_mean_reward_signal_dicts
     dump_extra_info["group_mean_reward_weight"] = group_mean_reward_weight_dicts
-    # Backward-compatible aliases for existing JSONL consumers.
-    dump_extra_info["reward_signals"] = group_mean_reward_signal_dicts
-    dump_extra_info["reward_focal_weights"] = group_mean_reward_weight_dicts
-    dump_extra_info["reward_weights"] = group_mean_reward_weight_dicts
     dump_extra_info["reward_others"] = reward_others_dicts
 
     return RewardPostprocessResult(

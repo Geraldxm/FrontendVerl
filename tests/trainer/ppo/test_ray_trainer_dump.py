@@ -30,21 +30,28 @@ class RayTrainerDumpTest(unittest.TestCase):
             "reward_final_score": [5.8181818],
             "reward_valid_sample": [1],
             "reward_is_llm_generation_error": [0],
-            "reward_signals": [
+            "sample_reward_signal": [
                 {
                     "format_score": 10.0,
                     "console_errors": 8.0,
                     "network_violations": 10.0,
                 }
             ],
-            "reward_focal_weights": [
+            "sample_reward_weight": [
                 {
                     "format_score": 0.1,
                     "console_errors": 0.2,
                     "network_violations": 0.7,
                 }
             ],
-            "reward_weights": [
+            "group_mean_reward_signal": [
+                {
+                    "format_score": 9.0,
+                    "console_errors": 7.0,
+                    "network_violations": 10.0,
+                }
+            ],
+            "group_mean_reward_weight": [
                 {
                     "format_score": 0.1,
                     "console_errors": 0.2,
@@ -66,9 +73,10 @@ class RayTrainerDumpTest(unittest.TestCase):
             "reward_detail": [
                 {
                     "scores": {"raw": 0.0, "direct": 5.8181818, "focal": 2.337951, "final": 5.8181818},
-                    "signals": {"format_score": 10.0},
-                    "focal_weights": {"format_score": 0.1},
-                    "reward_weights": {"format_score": 0.1},
+                    "sample_reward_signal": {"format_score": 10.0},
+                    "sample_reward_weight": {"format_score": 0.1},
+                    "group_mean_reward_signal": {"format_score": 9.0},
+                    "group_mean_reward_weight": {"format_score": 0.1},
                     "reward_others": {"max": {"format_score": 10.0}, "min": {"format_score": 10.0}, "var": {"format_score": 0.0}},
                     "status": {
                         "overall": "success",
@@ -109,10 +117,11 @@ class RayTrainerDumpTest(unittest.TestCase):
                 "gts",
                 "step",
                 "reward_scores",
-                "reward_signals",
-                "reward_weights",
+                "sample_reward_signal",
+                "sample_reward_weight",
+                "group_mean_reward_signal",
+                "group_mean_reward_weight",
                 "reward_others",
-                "focal_weights",
                 "status",
                 "render_info",
                 "judge_info",
@@ -135,7 +144,7 @@ class RayTrainerDumpTest(unittest.TestCase):
                 },
             )
             self.assertEqual(
-                row["reward_signals"],
+                row["sample_reward_signal"],
                 {
                     "format_score": 10.0,
                     "console_errors": 8.0,
@@ -143,7 +152,23 @@ class RayTrainerDumpTest(unittest.TestCase):
                 },
             )
             self.assertEqual(
-                row["reward_weights"],
+                row["sample_reward_weight"],
+                {
+                    "format_score": 0.1,
+                    "console_errors": 0.2,
+                    "network_violations": 0.7,
+                },
+            )
+            self.assertEqual(
+                row["group_mean_reward_signal"],
+                {
+                    "format_score": 9.0,
+                    "console_errors": 7.0,
+                    "network_violations": 10.0,
+                },
+            )
+            self.assertEqual(
+                row["group_mean_reward_weight"],
                 {
                     "format_score": 0.1,
                     "console_errors": 0.2,
@@ -158,15 +183,9 @@ class RayTrainerDumpTest(unittest.TestCase):
                     "var": {"format_score": 0.0, "console_errors": 0.0, "network_violations": 0.0},
                 },
             )
-            self.assertEqual(
-                row["focal_weights"],
-                {
-                    "format_score": 0.1,
-                    "console_errors": 0.2,
-                    "network_violations": 0.7,
-                },
-            )
-            self.assertEqual(row["focal_weights"], row["reward_weights"])
+            self.assertNotIn("reward_signals", row)
+            self.assertNotIn("reward_weights", row)
+            self.assertNotIn("focal_weights", row)
             self.assertEqual(row["status"], {"overall": "success", "error_message": ""})
             self.assertEqual(row["render_info"]["details"]["desktop"], "ok")
             self.assertEqual(row["judge_info"]["response"], "fine")

@@ -188,14 +188,11 @@ class TestFocalRewardPostprocess(unittest.TestCase):
         self.assertAlmostEqual(
             result.metrics["reward_status/overall_status/llm_generation_error/rate"], 0.25, places=6
         )
-        self.assertAlmostEqual(
-            result.metrics["reward_signals/color_scheme/mean"], (10.0 + 0.0 + 6.0) / 3.0, places=6
-        )
-        self.assertIn("reward_weights/color_scheme/mean", result.metrics)
-        self.assertIn("reward_others/max/color_scheme", result.metrics)
-        self.assertIn("reward_others/min/color_scheme", result.metrics)
-        self.assertIn("reward_others/var/color_scheme", result.metrics)
-        self.assertIn("reward_signals/color_scheme/focal_weight_mean", result.metrics)
+        self.assertAlmostEqual(result.metrics["group_reward_signal/color_scheme/mean"], (5.0 + 6.0) / 2.0, places=6)
+        self.assertIn("group_focal_weight/color_scheme/mean", result.metrics)
+        self.assertIn("group_reward_others/max/color_scheme", result.metrics)
+        self.assertIn("group_reward_others/min/color_scheme", result.metrics)
+        self.assertIn("group_reward_others/var/color_scheme", result.metrics)
         self.assertNotIn("reward_signals/color_scheme/max", result.metrics)
         self.assertNotIn("reward_signals/color_scheme/min", result.metrics)
         self.assertNotIn("reward_signals/color_scheme/var", result.metrics)
@@ -385,8 +382,8 @@ class TestFocalRewardPostprocess(unittest.TestCase):
 
         self.assertNotIn("reward_signals", result.validation_extra_info)
         self.assertNotIn("render_info", result.validation_extra_info)
-        self.assertIn("reward_signals", result.dump_extra_info)
-        self.assertIn("reward_weights", result.dump_extra_info)
+        self.assertNotIn("reward_signals", result.dump_extra_info)
+        self.assertNotIn("reward_weights", result.dump_extra_info)
         self.assertIn("sample_reward_signal", result.dump_extra_info)
         self.assertIn("sample_reward_weight", result.dump_extra_info)
         self.assertIn("group_mean_reward_signal", result.dump_extra_info)
@@ -397,13 +394,13 @@ class TestFocalRewardPostprocess(unittest.TestCase):
         self.assertEqual(result.dump_extra_info["group_mean_reward_signal"][0]["format_score"], 3.0)
         self.assertEqual(result.dump_extra_info["sample_reward_signal"][1]["format_score"], 4.0)
         self.assertEqual(result.dump_extra_info["group_mean_reward_signal"][1]["format_score"], 3.0)
-        self.assertEqual(result.dump_extra_info["reward_signals"][0], result.dump_extra_info["group_mean_reward_signal"][0])
-        self.assertEqual(result.dump_extra_info["reward_weights"][0], result.dump_extra_info["group_mean_reward_weight"][0])
         self.assertEqual(
             result.dump_extra_info["sample_reward_weight"][0],
             result.dump_extra_info["group_mean_reward_weight"][0],
         )
         reward_detail = result.dump_extra_info["reward_detail"][0]
+        self.assertNotIn("reward_signals", reward_detail)
+        self.assertNotIn("reward_weights", reward_detail)
         self.assertEqual(reward_detail["sample_reward_signal"]["format_score"], 2.0)
         self.assertEqual(reward_detail["group_mean_reward_signal"]["format_score"], 3.0)
 

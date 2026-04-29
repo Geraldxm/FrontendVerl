@@ -123,7 +123,6 @@
 - `sample_reward_weight`
 - `group_mean_reward_signal`
 - `group_mean_reward_weight`
-- 兼容旧字段：`reward_signals`、`reward_weights`、`reward_focal_weights`
 
 其中 `reward_detail` 是最有用的调试结构，每条样本一条记录，里面包含：
 
@@ -132,13 +131,9 @@
 - `sample_reward_weight`，当前样本计算 focal score 时使用的 rubric 权重
 - `group_mean_reward_signal`，当前 rollout group 每个 rubric 的均值
 - `group_mean_reward_weight`，当前 rollout group 估计出的归一化 focal rubric 权重
-- 兼容旧字段：`signals`、`focal_weights`、`reward_signals`、`reward_weights`
 - `status`，包括 `overall`、`error_message`、`render`、`judge`
 - `valid_sample`
 - `is_llm_generation_error`
-
-注意：旧的 `reward_signals` / `reward_weights` 在 JSONL 中仍然保留，但它们表示 group 级视图；
-新分析应优先读取 `sample_reward_signal` 和 `group_mean_reward_signal` 这类语义更明确的字段。
 
 ### 4.4 `metrics`
 
@@ -146,19 +141,84 @@
 
 当前 metrics 分成这几个模块：
 
-- `reward_signals/*`
+- `group_reward_signal/*`
+- `group_focal_weight/*`
+- `group_reward_others/*`
 - `reward_status/*`
 - `render_status/*`
 - `judge_status/*`
 
 记录的统计形式：
 
-- 所有 signal 分布记录 `mean/var/min/max`
+- `group_reward_signal/<rubric>/mean`
+- `group_focal_weight/<rubric>/mean`
+- `group_reward_others/{max,min,var}/<rubric>`
 - 所有离散状态只记录 `rate`
-- 每个 rubric 还会记录 `reward_signals/<rubric>/focal_weight_mean`
 - `reward_status/valid_sample/rate`
 - `reward_status/llm_generation_error/rate`
 - `reward_status/valid_group/rate`
+
+### 4.5 W&B 与 rollout JSONL 字段结构
+
+W&B 只记录 step 级总体统计，不记录单条样本的完整字典。当前字段结构是：
+
+```text
+group_reward_signal/<rubric>/mean
+group_focal_weight/<rubric>/mean
+group_reward_others/max/<rubric>
+group_reward_others/min/<rubric>
+group_reward_others/var/<rubric>
+```
+
+含义：
+
+- `group_reward_signal/<rubric>/mean`：先在每个 rollout group 内对该 rubric 的有效样本 signal 求均值，再对当前 step 的 groups 求平均。
+- `group_focal_weight/<rubric>/mean`：当前 step 内各 group 的归一化 focal rubric 权重均值。
+- `group_reward_others/max/<rubric>`：当前 step 内各 group 的 `group_mean_reward_signal[<rubric>]` 最大值。
+- `group_reward_others/min/<rubric>`：当前 step 内各 group 的 `group_mean_reward_signal[<rubric>]` 最小值。
+- `group_reward_others/var/<rubric>`：当前 step 内各 group 的 `group_mean_reward_signal[<rubric>]` 方差。
+
+rollout JSONL 记录样本级调试信息。每一行对应一条 sample，核心 reward 字段结构是：
+
+```json
+{
+  "reward_scores": {
+    "raw": 0.0,
+    "direct": 0.0,
+    "focal": 0.0,
+    "final": 0.0,
+    "valid_sample": 1,
+    "is_llm_generation_error": 0
+  },
+  "sample_reward_signal": {
+    "<rubric>": 0.0
+  },
+  "sample_reward_weight": {
+    "<rubric>": 0.0
+  },
+  "group_mean_reward_signal": {
+    "<rubric>": 0.0
+  },
+  "group_mean_reward_weight": {
+    "<rubric>": 0.0
+  },
+  "reward_others": {
+    "max": {"<rubric>": 0.0},
+    "min": {"<rubric>": 0.0},
+    "var": {"<rubric>": 0.0}
+  }
+}
+```
+
+含义：
+
+- `sample_reward_signal`：当前 sample 自己的原始 rubric 分数，适合排查单个 rollout 为什么得分高或低。
+- `sample_reward_weight`：当前 sample 计算 focal score 时使用的 rubric 权重；这个权重由 sample 所属 group 估计，所以同 group 内通常相同。
+- `group_mean_reward_signal`：当前 sample 所属 group 的有效样本 rubric 均值，用于对比 sample 分数与组内平均水平。
+- `group_mean_reward_weight`：当前 sample 所属 group 的归一化 focal rubric 权重。
+- `reward_others`：当前 sample 所属 group 的 rubric 级 `max/min/var`，用于判断组内该维度是否有区分度。
+
+注意：rollout JSONL 顶层不再写 `reward_signals` / `reward_weights`，避免把 group 级视图误读为 sample 级原始值。
 
 ## 5. 流程改动点
 

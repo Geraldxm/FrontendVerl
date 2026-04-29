@@ -322,12 +322,6 @@ def _build_generation_dump_entry(
         if isinstance(reward_detail, dict)
         else {},
     )
-    reward_signals = _get_dump_sample_value(
-        values=reward_extra_infos_dict.get("reward_signals"),
-        index=index,
-        default=group_mean_reward_signal,
-    )
-
     sample_reward_weight = _get_dump_sample_value(
         values=reward_extra_infos_dict.get("sample_reward_weight"),
         index=index,
@@ -342,24 +336,11 @@ def _build_generation_dump_entry(
         if isinstance(reward_detail, dict)
         else {},
     )
-    reward_weights = _get_dump_sample_value(
-        values=reward_extra_infos_dict.get("reward_weights"),
-        index=index,
-        default=_get_dump_sample_value(
-            values=reward_extra_infos_dict.get("reward_focal_weights"),
-            index=index,
-            default=reward_detail.get("reward_weights", reward_detail.get("focal_weights", group_mean_reward_weight))
-            if isinstance(reward_detail, dict)
-            else group_mean_reward_weight,
-        ),
-    )
     reward_others = _get_dump_sample_value(
         values=reward_extra_infos_dict.get("reward_others"),
         index=index,
         default=reward_detail.get("reward_others", {}) if isinstance(reward_detail, dict) else {},
     )
-    # 兼容旧字段 focal_weights：保持与 reward_weights 同值。
-    focal_weights = reward_weights
     overall_status = _get_dump_sample_value(
         values=reward_extra_infos_dict.get("overall_status"),
         index=index,
@@ -392,10 +373,7 @@ def _build_generation_dump_entry(
         "sample_reward_weight": make_json_serializable(sample_reward_weight),
         "group_mean_reward_signal": make_json_serializable(group_mean_reward_signal),
         "group_mean_reward_weight": make_json_serializable(group_mean_reward_weight),
-        "reward_signals": make_json_serializable(reward_signals),
-        "reward_weights": make_json_serializable(reward_weights),
         "reward_others": make_json_serializable(reward_others),
-        "focal_weights": make_json_serializable(focal_weights),
         "status": make_json_serializable(
             {
                 "overall": overall_status,
