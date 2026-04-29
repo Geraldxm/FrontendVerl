@@ -119,18 +119,26 @@
 - 上面的验证标量字段
 - `reward`
 - `reward_detail`
-- `reward_focal_weights`
+- `sample_reward_signal`
+- `sample_reward_weight`
+- `group_mean_reward_signal`
+- `group_mean_reward_weight`
+- 兼容旧字段：`reward_signals`、`reward_weights`、`reward_focal_weights`
 
 其中 `reward_detail` 是最有用的调试结构，每条样本一条记录，里面包含：
 
 - `scores`，包括 `raw`、`direct`、`focal`、`final`
-- `signals`，每个 rubric 的原始分数
-- `focal_weights`，每个 rubric 的归一化权重
+- `sample_reward_signal`，当前样本每个 rubric 的原始分数
+- `sample_reward_weight`，当前样本计算 focal score 时使用的 rubric 权重
+- `group_mean_reward_signal`，当前 rollout group 每个 rubric 的均值
+- `group_mean_reward_weight`，当前 rollout group 估计出的归一化 focal rubric 权重
+- 兼容旧字段：`signals`、`focal_weights`、`reward_signals`、`reward_weights`
 - `status`，包括 `overall`、`error_message`、`render`、`judge`
 - `valid_sample`
 - `is_llm_generation_error`
 
-`reward_focal_weights` 则是每条样本对应的 rubric 权重字典，键名已经做了 slug 化。
+注意：旧的 `reward_signals` / `reward_weights` 在 JSONL 中仍然保留，但它们表示 group 级视图；
+新分析应优先读取 `sample_reward_signal` 和 `group_mean_reward_signal` 这类语义更明确的字段。
 
 ### 4.4 `metrics`
 
@@ -208,4 +216,3 @@
 - `my/train_local.sh.example`
 
 这样可以把模型路径、reward server 地址、W&B key 这些敏感或环境相关的值留在本地，不进 git。
-

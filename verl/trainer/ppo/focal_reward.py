@@ -585,19 +585,22 @@ def postprocess_reward(
         # 兼容旧 key：保留 focal_weight_mean 以避免旧看板断裂。
         metrics[f"reward_signals/{signal_slug}/focal_weight_mean"] = weight_mean
 
-    # 为每条样本生成 group 级聚合视图：
-    # reward_signals: 11 个信号的当前组均分；
-    # reward_weights: 11 个归一化 focal 权重；
-    # reward_others: 11 个信号的 max/min/var。
-    reward_signal_mean_dicts: list[dict[str, float]] = []
-    reward_weight_dicts: list[dict[str, float]] = []
+    # 为每条样本生成 dump 视图：
+    # group_mean_reward_signal: 当前组的 reward signal 均值；
+    # group_mean_reward_weight: 当前组估计出的归一化 focal rubric 权重；
+    # sample_reward_signal: 当前样本自己的原始 reward signal；
+    # sample_reward_weight: 当前样本计算 focal score 时使用的 rubric 权重（由 group 估计）。
+    group_mean_reward_signal_dicts: list[dict[str, float]] = []
+    group_mean_reward_weight_dicts: list[dict[str, float]] = []
     reward_others_dicts: list[dict[str, dict[str, float]]] = []
+    sample_reward_signal_dicts: list[dict[str, float]] = []
+    sample_reward_weight_dicts: list[dict[str, float]] = []
     for uid_value in uid_values:
         group_stats = uid_group_signal_stats[uid_value]
-        reward_signal_mean_dicts.append(
+        group_mean_reward_signal_dicts.append(
             {signal_slug: float(group_stats["mean"][idx]) for idx, signal_slug in enumerate(signal_slugs)}
         )
-        reward_weight_dicts.append(
+        group_mean_reward_weight_dicts.append(
             {signal_slug: float(group_stats["weights"][idx]) for idx, signal_slug in enumerate(signal_slugs)}
         )
         reward_others_dicts.append(
@@ -607,6 +610,12 @@ def postprocess_reward(
                 "var": {signal_slug: float(group_stats["var"][idx]) for idx, signal_slug in enumerate(signal_slugs)},
             }
         )
+    for sample_idx in range(batch_size):
+        sample_reward_signal_dicts.append(
+            {signal_slug: float(signal_matrix[sample_idx, idx]) for idx, signal_slug in enumerate(signal_slugs)}
+        )
+        # Focal rubric weights are estimated at group level, then applied to every sample in that group.
+        sample_reward_weight_dicts.append(group_mean_reward_weight_dicts[sample_idx])
 
     # 结构化的 dump 字段，减少扁平 key 的混乱度。
     # 保持旧字段兼容的同时，新增 `reward_detail` 供调试直接读取。
@@ -620,12 +629,15 @@ def postprocess_reward(
                     "focal": float(focal_scores[idx]),
                     "final": float(final_scores[idx]),
                 },
-                "signals": {
-                    signal_slug: float(reward_signal_mean_dicts[idx][signal_slug]) for signal_slug in signal_slugs
-                },
-                "focal_weights": reward_weight_dicts[idx],
-                "reward_signals": reward_signal_mean_dicts[idx],
-                "reward_weights": reward_weight_dicts[idx],
+                "signals": sample_reward_signal_dicts[idx],
+                "focal_weights": sample_reward_weight_dicts[idx],
+                "sample_reward_signal": sample_reward_signal_dicts[idx],
+                "sample_reward_weight": sample_reward_weight_dicts[idx],
+                "group_mean_reward_signal": group_mean_reward_signal_dicts[idx],
+                "group_mean_reward_weight": group_mean_reward_weight_dicts[idx],
+                # Backward-compatible aliases for older rollout viewers/analysis scripts.
+                "reward_signals": group_mean_reward_signal_dicts[idx],
+                "reward_weights": group_mean_reward_weight_dicts[idx],
                 "reward_others": reward_others_dicts[idx],
                 "status": {
                     "overall": overall_statuses[idx],
@@ -636,12 +648,17 @@ def postprocess_reward(
                 "valid_sample": int(valid_sample_mask[idx]),
                 "is_llm_generation_error": int(llm_generation_error_mask[idx]),
             }
-        )
+    )
 
     dump_extra_info["reward_detail"] = [make_json_serializable(item) for item in reward_detail]
-    dump_extra_info["reward_signals"] = reward_signal_mean_dicts
-    dump_extra_info["reward_focal_weights"] = reward_weight_dicts
-    dump_extra_info["reward_weights"] = reward_weight_dicts
+    dump_extra_info["sample_reward_signal"] = sample_reward_signal_dicts
+    dump_extra_info["sample_reward_weight"] = sample_reward_weight_dicts
+    dump_extra_info["group_mean_reward_signal"] = group_mean_reward_signal_dicts
+    dump_extra_info["group_mean_reward_weight"] = group_mean_reward_weight_dicts
+    # Backward-compatible aliases for existing JSONL consumers.
+    dump_extra_info["reward_signals"] = group_mean_reward_signal_dicts
+    dump_extra_info["reward_focal_weights"] = group_mean_reward_weight_dicts
+    dump_extra_info["reward_weights"] = group_mean_reward_weight_dicts
     dump_extra_info["reward_others"] = reward_others_dicts
 
     return RewardPostprocessResult(

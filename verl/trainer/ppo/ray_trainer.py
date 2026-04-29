@@ -308,10 +308,39 @@ def _build_generation_dump_entry(
         ),
     }
 
+    sample_reward_signal = _get_dump_sample_value(
+        values=reward_extra_infos_dict.get("sample_reward_signal"),
+        index=index,
+        default=reward_detail.get("sample_reward_signal", reward_detail.get("signals", {}))
+        if isinstance(reward_detail, dict)
+        else {},
+    )
+    group_mean_reward_signal = _get_dump_sample_value(
+        values=reward_extra_infos_dict.get("group_mean_reward_signal"),
+        index=index,
+        default=reward_detail.get("group_mean_reward_signal", {})
+        if isinstance(reward_detail, dict)
+        else {},
+    )
     reward_signals = _get_dump_sample_value(
         values=reward_extra_infos_dict.get("reward_signals"),
         index=index,
-        default=reward_detail.get("signals", {}) if isinstance(reward_detail, dict) else {},
+        default=group_mean_reward_signal,
+    )
+
+    sample_reward_weight = _get_dump_sample_value(
+        values=reward_extra_infos_dict.get("sample_reward_weight"),
+        index=index,
+        default=reward_detail.get("sample_reward_weight", reward_detail.get("focal_weights", {}))
+        if isinstance(reward_detail, dict)
+        else {},
+    )
+    group_mean_reward_weight = _get_dump_sample_value(
+        values=reward_extra_infos_dict.get("group_mean_reward_weight"),
+        index=index,
+        default=reward_detail.get("group_mean_reward_weight", {})
+        if isinstance(reward_detail, dict)
+        else {},
     )
     reward_weights = _get_dump_sample_value(
         values=reward_extra_infos_dict.get("reward_weights"),
@@ -319,9 +348,9 @@ def _build_generation_dump_entry(
         default=_get_dump_sample_value(
             values=reward_extra_infos_dict.get("reward_focal_weights"),
             index=index,
-            default=reward_detail.get("reward_weights", reward_detail.get("focal_weights", {}))
+            default=reward_detail.get("reward_weights", reward_detail.get("focal_weights", group_mean_reward_weight))
             if isinstance(reward_detail, dict)
-            else {},
+            else group_mean_reward_weight,
         ),
     )
     reward_others = _get_dump_sample_value(
@@ -359,6 +388,10 @@ def _build_generation_dump_entry(
         "gts": make_json_serializable(gt_text),
         "step": make_json_serializable(step),
         "reward_scores": make_json_serializable(reward_scores),
+        "sample_reward_signal": make_json_serializable(sample_reward_signal),
+        "sample_reward_weight": make_json_serializable(sample_reward_weight),
+        "group_mean_reward_signal": make_json_serializable(group_mean_reward_signal),
+        "group_mean_reward_weight": make_json_serializable(group_mean_reward_weight),
         "reward_signals": make_json_serializable(reward_signals),
         "reward_weights": make_json_serializable(reward_weights),
         "reward_others": make_json_serializable(reward_others),

@@ -387,8 +387,25 @@ class TestFocalRewardPostprocess(unittest.TestCase):
         self.assertNotIn("render_info", result.validation_extra_info)
         self.assertIn("reward_signals", result.dump_extra_info)
         self.assertIn("reward_weights", result.dump_extra_info)
+        self.assertIn("sample_reward_signal", result.dump_extra_info)
+        self.assertIn("sample_reward_weight", result.dump_extra_info)
+        self.assertIn("group_mean_reward_signal", result.dump_extra_info)
+        self.assertIn("group_mean_reward_weight", result.dump_extra_info)
         self.assertIn("reward_others", result.dump_extra_info)
         self.assertIn("render_info", result.dump_extra_info)
+        self.assertEqual(result.dump_extra_info["sample_reward_signal"][0]["format_score"], 2.0)
+        self.assertEqual(result.dump_extra_info["group_mean_reward_signal"][0]["format_score"], 3.0)
+        self.assertEqual(result.dump_extra_info["sample_reward_signal"][1]["format_score"], 4.0)
+        self.assertEqual(result.dump_extra_info["group_mean_reward_signal"][1]["format_score"], 3.0)
+        self.assertEqual(result.dump_extra_info["reward_signals"][0], result.dump_extra_info["group_mean_reward_signal"][0])
+        self.assertEqual(result.dump_extra_info["reward_weights"][0], result.dump_extra_info["group_mean_reward_weight"][0])
+        self.assertEqual(
+            result.dump_extra_info["sample_reward_weight"][0],
+            result.dump_extra_info["group_mean_reward_weight"][0],
+        )
+        reward_detail = result.dump_extra_info["reward_detail"][0]
+        self.assertEqual(reward_detail["sample_reward_signal"]["format_score"], 2.0)
+        self.assertEqual(reward_detail["group_mean_reward_signal"]["format_score"], 3.0)
 
         infos_dict = {"reward": result.reward_tensor.sum(-1).cpu().tolist(), **result.validation_extra_info}
         data_sources = ["source_a"] * 4
