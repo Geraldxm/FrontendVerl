@@ -8,6 +8,8 @@
 **/playground
 **/wandb
 **/merged_checkpoints
+my/data
+my/Instructions
 
 /pyrightconfig.json
 

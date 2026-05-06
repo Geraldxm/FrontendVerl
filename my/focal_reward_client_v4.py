@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """
-Naive reward client V3.
+Naive reward client V4.
+
+版本定位（快速区分）:
+- 对接 `NaiveSingleRewardServerV4`（`/compute_reward_v4`）。
+- render-only：只返回 5 个一层信号，不再依赖 judge/VLM 打分维度。
+- `extra_info` 本地不再强制要求 `query/questions`，仅保留 `index` 自动补齐与 `step/global_steps` 注入。
 
 接口要求:
     async def compute_score(*, data_source, solution_str, ground_truth, extra_info=None, **kwargs)
 
 当前职责:
 1. 规范化调用方传入的参数
-2. 请求 NaiveSingleRewardServerV3 的 /compute_reward_v3 接口
+2. 请求 NaiveSingleRewardServerV4 的 /compute_reward_v4 接口
 3. 原样透传服务端字段; 请求异常时返回统一降级结构
 """
 
@@ -23,7 +28,7 @@ from typing import Any
 import httpx
 import numpy as np
 
-DEFAULT_SERVER_URL = "http://127.0.0.1:48002/compute_reward_v3"
+DEFAULT_SERVER_URL = "http://127.0.0.1:48003/compute_reward_v4"
 SERVER_URL = os.getenv("REWARD_SERVER_URL", DEFAULT_SERVER_URL)
 DEFAULT_MAX_CONNECTIONS = 1000
 DEFAULT_MAX_KEEPALIVE_CONNECTIONS = 1000
@@ -68,10 +73,6 @@ def _build_default_reward_signals() -> dict[str, Any]:
         "network_violations": 0.0,
         "a11y_score": 0.0,
         "element_hit_rate": 0.0,
-        "ui_spatial_score": 0.0,
-        "Color Harmony and Theme Fit": 0.0,
-        "Typography Rhythm and Readability": 0.0,
-        "First-view Content Messaging": 0.0,
     }
 
 
@@ -86,30 +87,10 @@ def _build_request_error_result(*, error_message: str) -> dict[str, Any]:
     }
 
 
-def _extract_query_from_origin_info(*, origin_info: Any) -> str:
-    parsed_origin_info = origin_info
-    if isinstance(parsed_origin_info, str):
-        try:
-            parsed_origin_info = json.loads(parsed_origin_info)
-        except json.JSONDecodeError:
-            return ""
-
-    if not isinstance(parsed_origin_info, dict):
-        return ""
-
-    for key in ("query", "question", "questions"):
-        value = parsed_origin_info.get(key)
-        if isinstance(value, str) and value.strip():
-            return value
-
-    return ""
-
-
 def _normalize_extra_info(*, extra_info: Any) -> tuple[dict[str, Any], str]:
-    if extra_info is None:
-        return {}, ""
-
     normalized_extra_info = extra_info
+    if normalized_extra_info is None:
+        normalized_extra_info = {}
     if isinstance(normalized_extra_info, str):
         try:
             normalized_extra_info = json.loads(normalized_extra_info)
@@ -131,16 +112,6 @@ def _normalize_extra_info(*, extra_info: Any) -> tuple[dict[str, Any], str]:
 
     if not normalized_extra_info.get("experiment_name"):
         normalized_extra_info["experiment_name"] = _read_experiment_name_from_env()
-
-    if not normalized_extra_info.get("query") and not normalized_extra_info.get("questions"):
-        fallback_query = _extract_query_from_origin_info(
-            origin_info=normalized_extra_info.get("origin_info")
-        )
-        if fallback_query:
-            normalized_extra_info["query"] = fallback_query
-
-    if not normalized_extra_info.get("query") and not normalized_extra_info.get("questions"):
-        return {}, "query or questions must be provided in extra_info"
 
     return normalized_extra_info, ""
 
