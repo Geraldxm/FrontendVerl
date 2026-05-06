@@ -113,7 +113,6 @@
 - reward client 的原始调试字段：
   - `overall_status`
   - `error_message`
-  - `reward_signals`
   - `render_info`
   - `judge_info`
 - 上面的验证标量字段

@@ -91,6 +91,13 @@ Use concise Conventional Commits style: `type: details`.
 
 To reduce argument-order mistakes, prefer keyword arguments where practical.
 
+#### Chinese documentation convention
+
+在这个 fork 中新增分析脚本或报告时：
+
+- 生成的说明文档和面向用户的报告文字统一使用中文。
+- 在代码文件头部和主要逻辑函数前添加简洁中文注释或 docstring。
+
 #### Focal reward logging convention
 
 When changing focal reward logging, keep W&B metrics group-level and rollout

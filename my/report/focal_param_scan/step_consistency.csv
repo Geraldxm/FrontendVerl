@@ -1,0 +1,2 @@
+step,row_count,group_count,group_size_counts,status_counts,group_signal_abs_error_mean,group_signal_abs_error_max,focal_replay_abs_error_mean,focal_replay_abs_error_max
+1,1024,64,"{""16"": 64}","{""judge_fail"": 1, ""llm_generation_error"": 192, ""parse_fail"": 6, ""render_engine_error"": 12, ""success"": 813}",0.0,0.0,8.951173136040325e-16,1.7763568394002505e-15
