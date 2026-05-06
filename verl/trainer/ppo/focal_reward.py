@@ -43,7 +43,7 @@ from verl import DataProto
 # success 表示走完了整个 judger 流程; llm_generation_error 表示 LLM 生成错误: 这两种方式都是有效的样本
 # 而其他情况则是 reward server 出故障, 如 render/judge/parse 失败
 VALID_FOCAL_OVERALL_STATUSES = frozenset({"success", "llm_generation_error"})
-RAW_REWARD_DEBUG_KEYS = ("overall_status", "error_message", "reward_signals", "render_info", "judge_info")
+RAW_REWARD_DEBUG_KEYS = ("overall_status", "error_message", "render_info", "judge_info")
 
 
 @dataclass
