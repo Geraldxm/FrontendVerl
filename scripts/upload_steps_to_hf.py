@@ -3,13 +3,16 @@
 Upload selected checkpoint steps to Hugging Face Hub, using one repo per step.
 
 Example:
+export HF_ENDPOINT="https://huggingface.co/"
+export HF_TOKEN="your-hf-token"
 python scripts/upload_steps_to_hf.py \
   --source-dirs \
-    /inspire/hdd/global_user/gexinmu-253108100065/Repos/FrontendVerl/merged_checkpoints/frontend_focal/baseline_v3_Qwen3-1.7B-Base \
-    /inspire/hdd/global_user/gexinmu-253108100065/Repos/FrontendVerl/merged_checkpoints/frontend_focal/focal_v3_Qwen3-1.7B-Base \
-  --steps 80 120 140 \
-  --namespace your-hf-username \
-  --repo-prefix frontend-focal \
+    /inspire/hdd/global_user/gexinmu-253108100065/Repos/FrontendVerl/merged_checkpoints/frontend_focal/baseline_v3_n16_Qwen3-4B \
+    /inspire/hdd/global_user/gexinmu-253108100065/Repos/FrontendVerl/merged_checkpoints/frontend_focal/focal_v3_n16_e0_t1_g5_Qwen3-4B \
+  --steps 20 \
+  --namespace Geraldxm \
+  --repo-prefix "" \
+  --repo-suffix "1e-5" \
   --private
 """
 
@@ -42,8 +45,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--namespace", required=True, help="HF namespace, usually your username or org.")
     parser.add_argument(
         "--repo-prefix",
-        required=True,
+        required=False,
+        default="",
         help="Prefix for generated repo names, e.g. frontend-focal.",
+    )
+    parser.add_argument(
+        "--repo-suffix",
+        required=False,
+        default="",
+        help="Suffix for generated repo names, e.g. v1.",
     )
     parser.add_argument(
         "--repo-type",
@@ -66,6 +76,14 @@ def parse_args() -> argparse.Namespace:
         "--skip-missing",
         action="store_true",
         help="Skip missing steps instead of failing.",
+    )
+    parser.add_argument(
+        "--upload-subdir",
+        default="actor_hf",
+        help=(
+            "Subdirectory under each step uploaded as repo root. "
+            "Use '.' to upload the whole step directory."
+        ),
     )
     parser.add_argument("--dry-run", action="store_true", help="Only print planned actions.")
     return parser.parse_args()
@@ -114,6 +132,7 @@ def main() -> int:
     print(f"  steps={normalized_steps}")
     print(f"  namespace={args.namespace}")
     print(f"  repo_prefix={args.repo_prefix}")
+    print(f"  repo_suffix={args.repo_suffix}")
     print(f"  repo_type={args.repo_type}")
     print(f"  private={args.private}")
     print(f"  dry_run={args.dry_run}")
@@ -126,7 +145,16 @@ def main() -> int:
         steps=args.steps,
     ):
         total += 1
-        repo_name = sanitize_repo_name(name=f"{args.repo_prefix}-{exp_name}-step-{step_num}")
+        # repo_prefix and repo_suffix
+        if args.repo_prefix:
+            repo_name_base = f"{args.repo_prefix}-{exp_name}-step-{step_num}"
+        else:
+            repo_name_base = f"{exp_name}-step-{step_num}"
+
+        if args.repo_suffix:
+            repo_name = sanitize_repo_name(name=f"{repo_name_base}-{args.repo_suffix}")
+        else:
+            repo_name = sanitize_repo_name(name=repo_name_base)
         repo_id = f"{args.namespace}/{repo_name}"
         commit_message = f"upload {exp_name} {step_dir_name}"
 
@@ -139,7 +167,18 @@ def main() -> int:
             failures += 1
             continue
 
+        upload_path = step_path if args.upload_subdir == "." else (step_path / args.upload_subdir)
+        if not upload_path.exists():
+            msg = f"[warn] Missing upload path: {upload_path}"
+            if args.skip_missing:
+                print(msg + " (skipped)")
+                continue
+            print(msg)
+            failures += 1
+            continue
+
         print(f"\n[task {total}] {step_path}")
+        print(f"  -> upload_path={upload_path}")
         print(f"  -> repo_id={repo_id}")
         print(f"  -> commit_message={commit_message}")
 
@@ -154,7 +193,7 @@ def main() -> int:
                 exist_ok=True,
             )
             api.upload_folder(
-                folder_path=str(step_path),
+                folder_path=str(upload_path),
                 repo_id=repo_id,
                 repo_type=args.repo_type,
                 commit_message=commit_message,

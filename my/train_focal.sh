@@ -9,28 +9,31 @@ if [ -f "$LOCAL_CONFIG" ]; then
     source "$LOCAL_CONFIG"
 fi
 
-export REWARD_SERVER_URL="http://10.244.232.168:48001/compute_reward_v2"
+export REWARD_SERVER_URL="http://10.244.71.6:48002/compute_reward_v3"
 
 : "${MODEL_PATH:?Set MODEL_PATH in $LOCAL_CONFIG}"
+: "${EXPERIMENT_PREFIX:?Set EXPERIMENT_PREFIX before running my/train_focal.sh}"
 : "${PROJECT_NAME:=frontend_focal}"
 : "${WANDB_API_KEY:?Set WANDB_API_KEY in $LOCAL_CONFIG}"
 : "${WANDB_MODE:=offline}"
 
-EXPERIENT_NAME=focal_3_$(basename $MODEL_PATH)
+export EXPERIMENT_NAME="${EXPERIMENT_PREFIX}_$(basename "$MODEL_PATH")"
 
 python3 -m verl.trainer.main_ppo \
-    trainer.rollout_data_dir=rollouts/$EXPERIENT_NAME \
+    trainer.rollout_data_dir=rollouts/$EXPERIMENT_NAME \
     algorithm.use_focal=True \
     algorithm.focal.epsilon=0.05 \
-    algorithm.focal.temperature=10.0 \
+    algorithm.focal.temperature=5.0 \
     algorithm.focal.gamma=3.0 \
+    algorithm.focal.weight_min=0.05 \
+    algorithm.focal.weight_max=0.3 \
     trainer.resume_mode="auto" \
-    reward.custom_reward_function.path=my/focal_reward_client_v2.py \
+    reward.custom_reward_function.path=my/focal_reward_client_v3.py \
     reward.custom_reward_function.name=compute_score \
     reward.reward_model.enable=False \
     algorithm.adv_estimator=grpo \
-    data.train_files=my/data/websight_train_2k_nothink.parquet \
-    data.val_files=my/data/websight_val_2k_nothink.parquet \
+    data.train_files=my/data/websight_train_a11y_4k_nothink.parquet \
+    data.val_files=my/data/websight_val_a11y_4k_nothink.parquet \
     data.train_batch_size=64 \
     actor_rollout_ref.actor.ppo_mini_batch_size=64 \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2 \
@@ -38,14 +41,14 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=2 \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=2 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=4 \
-    actor_rollout_ref.rollout.n=8 \
+    actor_rollout_ref.rollout.n=16 \
     data.max_prompt_length=4096 \
     data.max_response_length=16384 \
     data.use_shm=True \
     data.filter_overlong_prompts=True \
     data.truncation='error' \
     actor_rollout_ref.model.path=$MODEL_PATH \
-    actor_rollout_ref.actor.optim.lr=1e-6 \
+    actor_rollout_ref.actor.optim.lr=3e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.use_kl_loss=True \
     actor_rollout_ref.actor.kl_loss_coef=0.001 \
@@ -60,26 +63,10 @@ python3 -m verl.trainer.main_ppo \
     trainer.critic_warmup=0 \
     trainer.logger='["console","wandb"]' \
     trainer.project_name=$PROJECT_NAME \
-    trainer.experiment_name=$EXPERIENT_NAME \
+    trainer.experiment_name=$EXPERIMENT_NAME \
     trainer.n_gpus_per_node=4 \
     trainer.nnodes=1 \
-    trainer.save_freq=5 \
-    trainer.total_epochs=3 \
+    trainer.save_freq=20 \
+    trainer.total_epochs=5 \
     trainer.test_freq=5 \
     trainer.val_before_train=True
-    
-    # data.val_max_samples=256 \
-
-    # 核心瓶颈是 ppo_micro_batch_size_per_gpu!
-    # 在 max_len = prompt + response = 20480 的情况下, mbs = 8 大概率 OOM
-    # 因此可以退回 mbs = 4, 增大 gpu_mem_util 给 vllm 的 rollout 过程
-    # 对于 log_prob_micro_batch_size_per_gpu 按照保守来计算
-
-    # Qwen3-4B, 4xh100
-    # data.train_batch_size=64 \
-    # actor_rollout_ref.actor.ppo_mini_batch_size=64 \
-    # actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2 \
-    # actor_rollout_ref.rollout.gpu_memory_utilization=0.4 \
-    # actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=2 \
-    # actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=2 \
-    # actor_rollout_ref.rollout.tensor_model_parallel_size=4 \

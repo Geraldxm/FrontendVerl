@@ -8,13 +8,13 @@ set -euo pipefail
 # - Auto-detect backend (fsdp/megatron) from checkpoint contents.
 #
 # Example:
-#   bash scripts/batch_merge_checkpoints.sh \
-#     --project frontend_focal \
-#     --experiment focal_v3_Qwen3-1.7B-Base \
-#     --experiment baseline_v3_Qwen3-1.7B-Base \
-#     --input-root checkpoints \
-#     --output-root merged_checkpoints \
-#     --step-count all
+# bash scripts/batch_merge_checkpoints.sh \
+#   --project frontend_focal \
+#   --experiment baseline_v3_n16_Qwen3-4B \
+#   --experiment focal_v3_n16_e0_t1_g5_Qwen3-4B \
+#   --input-root checkpoints \
+#   --output-root merged_checkpoints \
+#   --steps 20
 
 PROJECT_NAME="frontend_focal"
 INPUT_ROOT="checkpoints"
