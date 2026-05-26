@@ -10,6 +10,8 @@
 **/merged_checkpoints
 my/data
 my/Instructions
+my/report/focal_param_scan/heatmaps/
+.sii/
 
 /pyrightconfig.json
 
