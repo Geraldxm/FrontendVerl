@@ -252,6 +252,44 @@ def _distribution_metrics(prefix: str, values: np.ndarray) -> dict[str, float]:
     }
 
 
+def _project_weights_to_bounds(weights: np.ndarray, *, weight_min: float, weight_max: float) -> np.ndarray:
+    """
+    输入: 和为 1 的 rubric 权重，以及每个维度允许的上下界。
+    输出: 仍然和为 1、且每个维度满足上下界的权重。
+    意图: 限制极端 focal 权重，同时尽量保留原始权重的相对强弱。
+    """
+    num_weights = weights.shape[0]
+    weight_min = float(weight_min)
+    weight_max = float(weight_max)
+    if weight_min < 0:
+        raise ValueError("algorithm.focal.weight_min must be non-negative")
+    if weight_max <= 0:
+        raise ValueError("algorithm.focal.weight_max must be positive")
+    if weight_min > weight_max:
+        raise ValueError("algorithm.focal.weight_min must be less than or equal to algorithm.focal.weight_max")
+    if weight_min * num_weights > 1.0 or weight_max * num_weights < 1.0:
+        raise ValueError(
+            "algorithm.focal.weight_min/weight_max are infeasible for "
+            f"{num_weights} reward signals: min={weight_min}, max={weight_max}"
+        )
+
+    lower_tau = float(np.min(weights - weight_max))
+    upper_tau = float(np.max(weights - weight_min))
+    for _ in range(80):
+        mid_tau = (lower_tau + upper_tau) / 2.0
+        projected = np.clip(weights - mid_tau, weight_min, weight_max)
+        if float(np.sum(projected)) > 1.0:
+            lower_tau = mid_tau
+        else:
+            upper_tau = mid_tau
+
+    projected = np.clip(weights - upper_tau, weight_min, weight_max)
+    projected_sum = float(np.sum(projected))
+    if projected_sum <= 0:
+        raise ValueError("Bounded focal weights must sum to a positive value")
+    return projected / projected_sum
+
+
 def _compute_group_focal_scores(
     *,
     signal_matrix: np.ndarray,
@@ -259,6 +297,8 @@ def _compute_group_focal_scores(
     temperature: float,
     gamma: float,
     epsilon: float,
+    weight_min: float,
+    weight_max: float,
     max_signal_score: float = 10.0,
 ) -> dict[str, np.ndarray]:
     """
@@ -289,6 +329,11 @@ def _compute_group_focal_scores(
     if focal_weight_sum <= 0:
         raise ValueError("Focal weights must sum to a positive value")
     normalized_focal_weights = focal_weights / focal_weight_sum
+    normalized_focal_weights = _project_weights_to_bounds(
+        normalized_focal_weights,
+        weight_min=weight_min,
+        weight_max=weight_max,
+    )
 
     focal_scores = signal_matrix @ normalized_focal_weights
     return {
@@ -373,6 +418,8 @@ def postprocess_reward(
     temperature = float(_get_focal_param(focal_config, "temperature", 10.0))
     gamma = float(_get_focal_param(focal_config, "gamma", 3.0))
     epsilon = float(_get_focal_param(focal_config, "epsilon", 0.05))
+    weight_min = float(_get_focal_param(focal_config, "weight_min", 0.05))
+    weight_max = float(_get_focal_param(focal_config, "weight_max", 0.3))
 
     # valid sample 参与 focal 权重估计；invalid sample 不参与估计，只做补偿回填。
     valid_sample_mask = np.asarray(
@@ -412,6 +459,8 @@ def postprocess_reward(
             temperature=temperature,
             gamma=gamma,
             epsilon=epsilon,
+            weight_min=weight_min,
+            weight_max=weight_max,
         )
         group_direct_valid = group_score_result["direct_scores"]
         group_focal_valid = group_score_result["focal_scores"]

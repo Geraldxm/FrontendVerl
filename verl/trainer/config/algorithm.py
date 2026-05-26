@@ -46,6 +46,8 @@ class FocalConfig(BaseConfig):
     gamma: float = 3.0
     temperature: float = 10.0
     epsilon: float = 0.05
+    weight_min: float = 0.05
+    weight_max: float = 0.3
     base_weights: list[float] = field(default_factory=list)
 
 

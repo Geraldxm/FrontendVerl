@@ -341,6 +341,74 @@ class TestFocalRewardPostprocess(unittest.TestCase):
         np.testing.assert_allclose(final_scores, focal_scores, atol=1e-6)
         self.assertFalse(np.allclose(direct_scores, focal_scores))
 
+    def test_focal_weights_are_bounded_after_normalization(self):
+        batch = _build_batch(["group_a", "group_a"])
+        raw_reward_tensor = torch.zeros((2, 3), dtype=torch.float32)
+        reward_extra_infos = _build_reward_extra_infos(
+            overall_statuses=["success", "success"],
+            reward_signals=[
+                _build_reward_signals(
+                    format_score=0.0,
+                    console_errors=10.0,
+                    network_violations=10.0,
+                    a11y_score=10.0,
+                    element_hit_rate=10.0,
+                    ui_spatial_score=10.0,
+                    color_scheme=10.0,
+                    visual_style=10.0,
+                    imagery_and_visual_elements=10.0,
+                    typography_and_font_aesthetics=10.0,
+                    content_and_messaging=10.0,
+                ),
+                _build_reward_signals(
+                    format_score=0.0,
+                    console_errors=10.0,
+                    network_violations=10.0,
+                    a11y_score=10.0,
+                    element_hit_rate=10.0,
+                    ui_spatial_score=10.0,
+                    color_scheme=10.0,
+                    visual_style=10.0,
+                    imagery_and_visual_elements=10.0,
+                    typography_and_font_aesthetics=10.0,
+                    content_and_messaging=10.0,
+                ),
+            ],
+        )
+
+        result = postprocess_reward(
+            batch=batch,
+            raw_reward_tensor=raw_reward_tensor,
+            reward_extra_infos_dict=reward_extra_infos,
+            use_focal=True,
+            focal_config={"gamma": 10.0, "temperature": 1.0, "epsilon": 0.0, "weight_min": 0.05, "weight_max": 0.3},
+        )
+
+        weights = result.dump_extra_info["group_mean_reward_weight"][0]
+        self.assertAlmostEqual(sum(weights.values()), 1.0, places=6)
+        self.assertAlmostEqual(weights["format_score"], 0.3, places=6)
+        for signal_weight in weights.values():
+            self.assertGreaterEqual(signal_weight, 0.05 - 1e-6)
+            self.assertLessEqual(signal_weight, 0.3 + 1e-6)
+        self.assertAlmostEqual(result.metrics["group_focal_weight/format_score/mean"], 0.3, places=6)
+
+    def test_focal_weight_bounds_must_be_feasible(self):
+        batch = _build_batch(["group_a"])
+        raw_reward_tensor = torch.zeros((1, 3), dtype=torch.float32)
+        reward_extra_infos = _build_reward_extra_infos(
+            overall_statuses=["success"],
+            reward_signals=[_build_reward_signals(format_score=1.0)],
+        )
+
+        with self.assertRaisesRegex(ValueError, "weight_min/weight_max are infeasible"):
+            postprocess_reward(
+                batch=batch,
+                raw_reward_tensor=raw_reward_tensor,
+                reward_extra_infos_dict=reward_extra_infos,
+                use_focal=True,
+                focal_config={"base_weights": [], "weight_min": 0.1, "weight_max": 0.3},
+            )
+
     def test_postprocess_reward_validates_base_weight_length(self):
         batch = _build_batch(["group_a"])
         raw_reward_tensor = torch.zeros((1, 3), dtype=torch.float32)
