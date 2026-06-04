@@ -18,7 +18,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from verl.trainer.ppo.ray_trainer import RayPPOTrainer
+from verl.trainer.ppo.ray_trainer import RayPPOTrainer, _overlay_dvao_dump_fields
 
 
 class RayTrainerDumpTest(unittest.TestCase):
@@ -189,6 +189,28 @@ class RayTrainerDumpTest(unittest.TestCase):
             self.assertEqual(row["status"], {"overall": "success", "error_message": ""})
             self.assertEqual(row["render_info"]["details"]["desktop"], "ok")
             self.assertEqual(row["judge_info"]["response"], "fine")
+
+    def test_overlay_dvao_dump_fields_uses_advantage_weight_view(self):
+        final_weight = {"reward_signal_accuracy": 0.25, "reward_signal_format": 0.75}
+        reward_extra_infos = {
+            "sample_reward_weight": [{"accuracy": 1.0}],
+            "group_mean_reward_weight": [{"accuracy": 1.0}],
+        }
+        batch = SimpleNamespace(
+            non_tensor_batch={
+                "sample_dvao_weight": [final_weight],
+                "group_dvao_weight": [final_weight],
+                "group_focal_dvao_weight": [final_weight],
+            }
+        )
+
+        _overlay_dvao_dump_fields(batch=batch, reward_extra_infos_to_dump=reward_extra_infos)
+
+        self.assertEqual(reward_extra_infos["sample_reward_weight"], [final_weight])
+        self.assertEqual(reward_extra_infos["group_mean_reward_weight"], [final_weight])
+        self.assertEqual(reward_extra_infos["group_dvao_weight"], [final_weight])
+        self.assertNotIn("reward_signals", reward_extra_infos)
+        self.assertNotIn("reward_weights", reward_extra_infos)
 
 
 if __name__ == "__main__":

@@ -638,6 +638,7 @@ def postprocess_reward(
     # sample_reward_weight: 当前样本计算 focal score 时使用的 rubric 权重（由 group 估计）。
     group_mean_reward_signal_dicts: list[dict[str, float]] = []
     group_mean_reward_weight_dicts: list[dict[str, float]] = []
+    group_focal_weight_dicts: list[dict[str, float]] = []
     reward_others_dicts: list[dict[str, dict[str, float]]] = []
     sample_reward_signal_dicts: list[dict[str, float]] = []
     sample_reward_weight_dicts: list[dict[str, float]] = []
@@ -648,6 +649,12 @@ def postprocess_reward(
         )
         group_mean_reward_weight_dicts.append(
             {signal_slug: float(group_stats["weights"][idx]) for idx, signal_slug in enumerate(signal_slugs)}
+        )
+        group_focal_weight_dicts.append(
+            {
+                f"reward_signal_{signal_slug}": float(group_stats["weights"][idx])
+                for idx, signal_slug in enumerate(signal_slugs)
+            }
         )
         reward_others_dicts.append(
             {
@@ -662,6 +669,9 @@ def postprocess_reward(
         )
         # Focal rubric weights are estimated at group level, then applied to every sample in that group.
         sample_reward_weight_dicts.append(group_mean_reward_weight_dicts[sample_idx])
+
+    # Advantage estimators consume reward_signal_* keys, while rollout dumps keep the shorter display slugs.
+    derived_extra_info["group_focal_weight"] = np.asarray(group_focal_weight_dicts, dtype=object)
 
     # 结构化的 dump 字段，减少扁平 key 的混乱度。
     # 保持旧字段兼容的同时，新增 `reward_detail` 供调试直接读取。

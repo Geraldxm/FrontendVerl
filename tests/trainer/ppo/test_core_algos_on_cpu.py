@@ -21,6 +21,8 @@ import torch
 
 import verl.trainer.ppo.core_algos
 from verl.trainer.ppo.core_algos import (
+    compute_dvao_outcome_advantage,
+    compute_focal_dvao_outcome_advantage,
     compute_gae_advantage_return,
     compute_grpo_outcome_advantage,
     compute_grpo_vectorized_outcome_advantage,
@@ -311,6 +313,303 @@ def test_grpo_and_vectorized_equivalence(batch_size: int, seq_len: int, num_grou
     assert ret1.shape == ret2.shape == (batch_size, seq_len)
     assert torch.allclose(adv1, adv2, rtol=1e-5, atol=1e-6)
     assert torch.allclose(ret1, ret2, rtol=1e-5, atol=1e-6)
+
+
+def test_compute_dvao_outcome_advantage_matches_manual_formula():
+    response_mask = torch.ones((4, 2), dtype=torch.float32)
+    token_level_rewards = torch.zeros_like(response_mask)
+    index = np.asarray(["group_a", "group_a", "group_b", "group_b"], dtype=object)
+    reward_keys = ["reward_signal_accuracy", "reward_signal_format"]
+    non_tensor_batch = {
+        "reward_signal_accuracy": np.asarray([0.0, 2.0, 1.0, 3.0], dtype=np.float32),
+        "reward_signal_format": np.asarray([2.0, 2.0, 4.0, 0.0], dtype=np.float32),
+    }
+
+    advantages, returns = compute_dvao_outcome_advantage(
+        token_level_rewards=token_level_rewards,
+        response_mask=response_mask,
+        index=index,
+        config={
+            "dvao_reward_keys": reward_keys,
+            "dvao_reward_weights": [0.25, 0.75],
+        },
+        non_tensor_batch=non_tensor_batch,
+    )
+
+    expected_scalars = torch.tensor([-1.0, 1.0, 5.0 / 7.0, -5.0 / 7.0], dtype=torch.float32)
+    expected = expected_scalars.unsqueeze(-1) * response_mask
+    assert torch.allclose(advantages, expected, rtol=1e-6, atol=1e-6)
+    assert torch.allclose(returns, expected, rtol=1e-6, atol=1e-6)
+
+    sample_weights = non_tensor_batch["sample_dvao_weight"].tolist()
+    assert sample_weights[0] == {"reward_signal_accuracy": 1.0, "reward_signal_format": 0.0}
+    assert sample_weights[1] == {"reward_signal_accuracy": 1.0, "reward_signal_format": 0.0}
+    assert sample_weights[2]["reward_signal_accuracy"] == pytest.approx(1.0 / 7.0, abs=1e-6)
+    assert sample_weights[2]["reward_signal_format"] == pytest.approx(6.0 / 7.0, abs=1e-6)
+    assert sample_weights[3]["reward_signal_accuracy"] == pytest.approx(1.0 / 7.0, abs=1e-6)
+    assert sample_weights[3]["reward_signal_format"] == pytest.approx(6.0 / 7.0, abs=1e-6)
+
+    group_stds = non_tensor_batch["group_dvao_reward_std"].tolist()
+    assert group_stds[0]["reward_signal_accuracy"] == pytest.approx(1.0, abs=1e-6)
+    assert group_stds[0]["reward_signal_format"] == pytest.approx(0.0, abs=1e-6)
+    assert group_stds[2]["reward_signal_accuracy"] == pytest.approx(1.0, abs=1e-6)
+    assert group_stds[2]["reward_signal_format"] == pytest.approx(2.0, abs=1e-6)
+
+
+def test_compute_dvao_outcome_advantage_zero_variance_and_singleton_groups_return_zero():
+    response_mask = torch.ones((3, 2), dtype=torch.float32)
+    token_level_rewards = torch.zeros_like(response_mask)
+    index = np.asarray(["solo", "flat", "flat"], dtype=object)
+    non_tensor_batch = {
+        "reward_signal_accuracy": np.asarray([10.0, 3.0, 3.0], dtype=np.float32),
+        "reward_signal_format": np.asarray([1.0, 4.0, 4.0], dtype=np.float32),
+    }
+
+    advantages, returns = compute_dvao_outcome_advantage(
+        token_level_rewards=token_level_rewards,
+        response_mask=response_mask,
+        index=index,
+        config={
+            "dvao_reward_keys": ["reward_signal_accuracy", "reward_signal_format"],
+            "dvao_reward_weights": [],
+        },
+        non_tensor_batch=non_tensor_batch,
+    )
+
+    assert torch.equal(advantages, torch.zeros_like(response_mask))
+    assert torch.equal(returns, torch.zeros_like(response_mask))
+    for row in non_tensor_batch["sample_dvao_weight"].tolist():
+        assert row == {"reward_signal_accuracy": 0.0, "reward_signal_format": 0.0}
+
+
+def test_compute_dvao_outcome_advantage_uses_valid_samples_only():
+    response_mask = torch.ones((3, 2), dtype=torch.float32)
+    token_level_rewards = torch.zeros_like(response_mask)
+    index = np.asarray(["group", "group", "group"], dtype=object)
+    non_tensor_batch = {
+        "reward_signal_accuracy": np.asarray([0.0, 2.0, 100.0], dtype=np.float32),
+        "reward_signal_format": np.asarray([0.0, 0.0, 100.0], dtype=np.float32),
+        "reward_valid_sample": np.asarray([1, 1, 0], dtype=np.int32),
+    }
+
+    advantages, returns = compute_dvao_outcome_advantage(
+        token_level_rewards=token_level_rewards,
+        response_mask=response_mask,
+        index=index,
+        config={
+            "dvao_reward_keys": ["reward_signal_accuracy", "reward_signal_format"],
+            "dvao_reward_weights": [],
+        },
+        non_tensor_batch=non_tensor_batch,
+    )
+
+    expected = torch.tensor([[-1.0, -1.0], [1.0, 1.0], [0.0, 0.0]], dtype=torch.float32)
+    assert torch.allclose(advantages, expected, rtol=1e-6, atol=1e-6)
+    assert torch.allclose(returns, expected, rtol=1e-6, atol=1e-6)
+
+    group_means = non_tensor_batch["group_dvao_reward_mean"].tolist()
+    group_stds = non_tensor_batch["group_dvao_reward_std"].tolist()
+    assert group_means[0]["reward_signal_accuracy"] == pytest.approx(1.0, abs=1e-6)
+    assert group_means[0]["reward_signal_format"] == pytest.approx(0.0, abs=1e-6)
+    assert group_stds[0]["reward_signal_accuracy"] == pytest.approx(1.0, abs=1e-6)
+    assert group_stds[0]["reward_signal_format"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_compute_dvao_outcome_advantage_all_invalid_group_returns_zero():
+    response_mask = torch.ones((2, 2), dtype=torch.float32)
+    token_level_rewards = torch.zeros_like(response_mask)
+    index = np.asarray(["group", "group"], dtype=object)
+    non_tensor_batch = {
+        "reward_signal_accuracy": np.asarray([10.0, 20.0], dtype=np.float32),
+        "reward_signal_format": np.asarray([1.0, 9.0], dtype=np.float32),
+        "reward_valid_sample": np.asarray([0, 0], dtype=np.int32),
+    }
+
+    advantages, returns = compute_dvao_outcome_advantage(
+        token_level_rewards=token_level_rewards,
+        response_mask=response_mask,
+        index=index,
+        config={
+            "dvao_reward_keys": ["reward_signal_accuracy", "reward_signal_format"],
+            "dvao_reward_weights": [],
+        },
+        non_tensor_batch=non_tensor_batch,
+    )
+
+    assert torch.equal(advantages, torch.zeros_like(response_mask))
+    assert torch.equal(returns, torch.zeros_like(response_mask))
+    for row in non_tensor_batch["sample_dvao_weight"].tolist():
+        assert row == {"reward_signal_accuracy": 0.0, "reward_signal_format": 0.0}
+
+
+def test_compute_focal_dvao_outcome_advantage_matches_manual_formula():
+    response_mask = torch.ones((4, 2), dtype=torch.float32)
+    token_level_rewards = torch.zeros_like(response_mask)
+    index = np.asarray(["group_a", "group_a", "group_b", "group_b"], dtype=object)
+    reward_keys = ["reward_signal_accuracy", "reward_signal_format"]
+    focal_weight = {"reward_signal_accuracy": 0.25, "reward_signal_format": 0.75}
+    non_tensor_batch = {
+        "reward_signal_accuracy": np.asarray([0.0, 2.0, 1.0, 3.0], dtype=np.float32),
+        "reward_signal_format": np.asarray([2.0, 2.0, 4.0, 0.0], dtype=np.float32),
+        "group_focal_weight": np.asarray([focal_weight, focal_weight, focal_weight, focal_weight], dtype=object),
+        "reward_valid_sample": np.asarray([1, 1, 1, 1], dtype=np.int32),
+    }
+
+    advantages, returns = compute_focal_dvao_outcome_advantage(
+        token_level_rewards=token_level_rewards,
+        response_mask=response_mask,
+        index=index,
+        config={"dvao_reward_keys": reward_keys},
+        non_tensor_batch=non_tensor_batch,
+    )
+
+    expected_scalars = torch.tensor([-1.0, 1.0, 5.0 / 7.0, -5.0 / 7.0], dtype=torch.float32)
+    expected = expected_scalars.unsqueeze(-1) * response_mask
+    assert torch.allclose(advantages, expected, rtol=1e-6, atol=1e-6)
+    assert torch.allclose(returns, expected, rtol=1e-6, atol=1e-6)
+
+    final_weights = non_tensor_batch["group_focal_dvao_weight"].tolist()
+    assert final_weights[0] == {"reward_signal_accuracy": 1.0, "reward_signal_format": 0.0}
+    assert final_weights[1] == {"reward_signal_accuracy": 1.0, "reward_signal_format": 0.0}
+    assert final_weights[2]["reward_signal_accuracy"] == pytest.approx(1.0 / 7.0, abs=1e-6)
+    assert final_weights[2]["reward_signal_format"] == pytest.approx(6.0 / 7.0, abs=1e-6)
+    assert final_weights[3]["reward_signal_accuracy"] == pytest.approx(1.0 / 7.0, abs=1e-6)
+    assert final_weights[3]["reward_signal_format"] == pytest.approx(6.0 / 7.0, abs=1e-6)
+
+    variance_weights = non_tensor_batch["group_focal_dvao_variance_weight"].tolist()
+    assert variance_weights[0] == {"reward_signal_accuracy": 1.0, "reward_signal_format": 0.0}
+    assert variance_weights[2]["reward_signal_accuracy"] == pytest.approx(1.0 / 3.0, abs=1e-6)
+    assert variance_weights[2]["reward_signal_format"] == pytest.approx(2.0 / 3.0, abs=1e-6)
+
+
+def test_compute_focal_dvao_outcome_advantage_uses_valid_samples_only():
+    response_mask = torch.ones((3, 2), dtype=torch.float32)
+    token_level_rewards = torch.zeros_like(response_mask)
+    index = np.asarray(["group", "group", "group"], dtype=object)
+    focal_weight = {"reward_signal_accuracy": 0.5, "reward_signal_format": 0.5}
+    non_tensor_batch = {
+        "reward_signal_accuracy": np.asarray([0.0, 2.0, 100.0], dtype=np.float32),
+        "reward_signal_format": np.asarray([0.0, 0.0, 100.0], dtype=np.float32),
+        "group_focal_weight": np.asarray([focal_weight, focal_weight, focal_weight], dtype=object),
+        "reward_valid_sample": np.asarray([1, 1, 0], dtype=np.int32),
+    }
+
+    advantages, returns = compute_focal_dvao_outcome_advantage(
+        token_level_rewards=token_level_rewards,
+        response_mask=response_mask,
+        index=index,
+        config={"dvao_reward_keys": ["reward_signal_accuracy", "reward_signal_format"]},
+        non_tensor_batch=non_tensor_batch,
+    )
+
+    expected = torch.tensor([[-1.0, -1.0], [1.0, 1.0], [0.0, 0.0]], dtype=torch.float32)
+    assert torch.allclose(advantages, expected, rtol=1e-6, atol=1e-6)
+    assert torch.allclose(returns, expected, rtol=1e-6, atol=1e-6)
+
+
+def test_compute_focal_dvao_outcome_advantage_all_invalid_group_returns_zero():
+    response_mask = torch.ones((2, 2), dtype=torch.float32)
+    token_level_rewards = torch.zeros_like(response_mask)
+    index = np.asarray(["group", "group"], dtype=object)
+    focal_weight = {"reward_signal_accuracy": 0.5, "reward_signal_format": 0.5}
+    non_tensor_batch = {
+        "reward_signal_accuracy": np.asarray([10.0, 20.0], dtype=np.float32),
+        "reward_signal_format": np.asarray([1.0, 9.0], dtype=np.float32),
+        "group_focal_weight": np.asarray([focal_weight, focal_weight], dtype=object),
+        "reward_valid_sample": np.asarray([0, 0], dtype=np.int32),
+    }
+
+    advantages, returns = compute_focal_dvao_outcome_advantage(
+        token_level_rewards=token_level_rewards,
+        response_mask=response_mask,
+        index=index,
+        config={"dvao_reward_keys": ["reward_signal_accuracy", "reward_signal_format"]},
+        non_tensor_batch=non_tensor_batch,
+    )
+
+    assert torch.equal(advantages, torch.zeros_like(response_mask))
+    assert torch.equal(returns, torch.zeros_like(response_mask))
+    for row in non_tensor_batch["group_focal_dvao_weight"].tolist():
+        assert row == {"reward_signal_accuracy": 0.0, "reward_signal_format": 0.0}
+
+
+@pytest.mark.parametrize(
+    "config,non_tensor_batch,error_pattern",
+    [
+        ({}, {"reward_signal_accuracy": np.asarray([1.0, 2.0], dtype=np.float32)}, "dvao_reward_keys"),
+        (
+            {"dvao_reward_keys": ["reward_signal_missing"]},
+            {"reward_signal_accuracy": np.asarray([1.0, 2.0], dtype=np.float32)},
+            "not found",
+        ),
+        (
+            {"dvao_reward_keys": ["reward_signal_accuracy"], "dvao_reward_weights": [0.5, 0.5]},
+            {"reward_signal_accuracy": np.asarray([1.0, 2.0], dtype=np.float32)},
+            "length mismatch",
+        ),
+    ],
+)
+def test_compute_dvao_outcome_advantage_validates_config(config, non_tensor_batch, error_pattern):
+    response_mask = torch.ones((2, 2), dtype=torch.float32)
+    token_level_rewards = torch.zeros_like(response_mask)
+    index = np.asarray(["group", "group"], dtype=object)
+
+    with pytest.raises(ValueError, match=error_pattern):
+        compute_dvao_outcome_advantage(
+            token_level_rewards=token_level_rewards,
+            response_mask=response_mask,
+            index=index,
+            config=config,
+            non_tensor_batch=non_tensor_batch,
+        )
+
+
+@pytest.mark.parametrize(
+    "config,non_tensor_batch,error_pattern",
+    [
+        (
+            {"dvao_reward_keys": ["reward_signal_accuracy"]},
+            {"reward_signal_accuracy": np.asarray([1.0, 2.0], dtype=np.float32)},
+            "group_focal_weight",
+        ),
+        (
+            {"dvao_reward_keys": ["reward_signal_accuracy"], "dvao_reward_weights": [1.0]},
+            {
+                "reward_signal_accuracy": np.asarray([1.0, 2.0], dtype=np.float32),
+                "group_focal_weight": np.asarray(
+                    [{"reward_signal_accuracy": 1.0}, {"reward_signal_accuracy": 1.0}],
+                    dtype=object,
+                ),
+            },
+            "focal.base_weights",
+        ),
+        (
+            {"dvao_reward_keys": ["reward_signal_accuracy", "reward_signal_format"]},
+            {
+                "reward_signal_accuracy": np.asarray([1.0, 2.0], dtype=np.float32),
+                "reward_signal_format": np.asarray([0.0, 1.0], dtype=np.float32),
+                "group_focal_weight": np.asarray(
+                    [{"reward_signal_accuracy": 1.0}, {"reward_signal_accuracy": 1.0}],
+                    dtype=object,
+                ),
+            },
+            "missing reward key",
+        ),
+    ],
+)
+def test_compute_focal_dvao_outcome_advantage_validates_config(config, non_tensor_batch, error_pattern):
+    response_mask = torch.ones((2, 2), dtype=torch.float32)
+    token_level_rewards = torch.zeros_like(response_mask)
+    index = np.asarray(["group", "group"], dtype=object)
+
+    with pytest.raises(ValueError, match=error_pattern):
+        compute_focal_dvao_outcome_advantage(
+            token_level_rewards=token_level_rewards,
+            response_mask=response_mask,
+            index=index,
+            config=config,
+            non_tensor_batch=non_tensor_batch,
+        )
 
 
 def test_compute_policy_loss_flow_grpo() -> None:

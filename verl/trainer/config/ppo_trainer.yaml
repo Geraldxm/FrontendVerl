@@ -81,6 +81,13 @@ algorithm:
   # Whether to normalize advantages by std (specific to GRPO)
   norm_adv_by_std_in_grpo: True
 
+  # Reward component keys used by DVAO-style estimators when algorithm.adv_estimator=dvao/focal_dvao
+  dvao_reward_keys: null
+
+  # Base reward component weights used by pure DVAO before group-variance adaptation
+  # Do not set this for focal_dvao; use algorithm.focal.base_weights instead.
+  dvao_reward_weights: null
+
   # Whether to enable in-reward KL penalty
   use_kl_in_reward: False
 

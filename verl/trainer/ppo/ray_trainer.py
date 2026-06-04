@@ -207,8 +207,15 @@ def compute_advantage(
             adv_kwargs["index"] = data.non_tensor_batch["uid"]
         if "reward_baselines" in data.batch:  # optional
             adv_kwargs["reward_baselines"] = data.batch["reward_baselines"]
-        # GDPO: pass raw data for per-dimension reward extraction
-        if adv_estimator in (AdvantageEstimator.GDPO, "gdpo"):
+        # GDPO/DVAO-style estimators need raw non-tensor reward fields for per-dimension extraction.
+        if adv_estimator in (
+            AdvantageEstimator.GDPO,
+            AdvantageEstimator.DVAO,
+            AdvantageEstimator.FOCAL_DVAO,
+            "gdpo",
+            "dvao",
+            "focal_dvao",
+        ):
             adv_kwargs["non_tensor_batch"] = data.non_tensor_batch
             adv_kwargs["batch"] = data.batch
         # Add sum_pi_squared for Optimal Token Baseline
@@ -241,6 +248,46 @@ def _get_dump_sample_value(*, values: Any, index: int, default: Any) -> Any:
     if isinstance(values, list) and 0 <= index < len(values):
         return values[index]
     return default
+
+
+def _non_tensor_values_to_dump_list(values: Any) -> list[Any]:
+    """
+    输入: non_tensor_batch 中的 numpy/list 字段。
+    输出: 可按样本对齐写入 rollout JSONL 的 list。
+    边界: 这里只做容器转换，不改变训练侧数据。
+    """
+    if values is None:
+        return []
+    if hasattr(values, "tolist"):
+        return values.tolist()
+    if isinstance(values, tuple):
+        return list(values)
+    if isinstance(values, list):
+        return values
+    return []
+
+
+def _overlay_dvao_dump_fields(*, batch: DataProto, reward_extra_infos_to_dump: dict[str, Any]) -> None:
+    """
+    输入: 训练 batch 与即将落盘的 reward dump 字典。
+    输出: 原地补充 DVAO/focal+DVAO 动态权重字段。
+    意图: advantage 权重晚于 reward postprocess 产生，因此需要在 dump 前覆盖通用权重视图。
+    """
+    sample_dvao_weight = _non_tensor_values_to_dump_list(batch.non_tensor_batch.get("sample_dvao_weight"))
+    if not sample_dvao_weight:
+        return
+
+    group_dvao_weight = _non_tensor_values_to_dump_list(batch.non_tensor_batch.get("group_dvao_weight"))
+    group_dvao_reward_mean = _non_tensor_values_to_dump_list(batch.non_tensor_batch.get("group_dvao_reward_mean"))
+    group_dvao_reward_std = _non_tensor_values_to_dump_list(batch.non_tensor_batch.get("group_dvao_reward_std"))
+
+    reward_extra_infos_to_dump["sample_reward_weight"] = sample_dvao_weight
+    reward_extra_infos_to_dump["group_mean_reward_weight"] = group_dvao_weight or sample_dvao_weight
+    reward_extra_infos_to_dump["group_dvao_weight"] = group_dvao_weight or sample_dvao_weight
+    if group_dvao_reward_mean:
+        reward_extra_infos_to_dump["group_dvao_reward_mean"] = group_dvao_reward_mean
+    if group_dvao_reward_std:
+        reward_extra_infos_to_dump["group_dvao_reward_std"] = group_dvao_reward_std
 
 
 def _build_generation_dump_entry(
@@ -600,6 +647,7 @@ class RayPPOTrainer:
                     "request_id",
                     batch.non_tensor_batch["request_id"].tolist(),
                 )
+            _overlay_dvao_dump_fields(batch=batch, reward_extra_infos_to_dump=reward_extra_infos_to_dump)
 
             self._dump_generations(
                 inputs=inputs,
@@ -1867,6 +1915,62 @@ class RayPPOTrainer:
                             metrics[f"gdpo/{key}/std"] = float(np.std(vals))
                             metrics[f"gdpo/{key}/max"] = float(np.max(vals))
                             metrics[f"gdpo/{key}/min"] = float(np.min(vals))
+                # DVAO per-component reward and dynamic group-weight metrics
+                dvao_reward_keys = self.config.algorithm.get("dvao_reward_keys", None)
+                if dvao_reward_keys and self.config.algorithm.adv_estimator in ("dvao", AdvantageEstimator.DVAO):
+                    group_dvao_weights = batch.non_tensor_batch.get("group_dvao_weight", [])
+                    group_dvao_stds = batch.non_tensor_batch.get("group_dvao_reward_std", [])
+                    for key in dvao_reward_keys:
+                        if key in batch.non_tensor_batch:
+                            vals = np.asarray(batch.non_tensor_batch[key], dtype=np.float32)
+                            metrics[f"dvao/{key}/mean"] = float(np.mean(vals))
+                            metrics[f"dvao/{key}/std"] = float(np.std(vals))
+                            metrics[f"dvao/{key}/max"] = float(np.max(vals))
+                            metrics[f"dvao/{key}/min"] = float(np.min(vals))
+                        weight_values = [
+                            float(row.get(key, 0.0)) for row in group_dvao_weights if isinstance(row, dict)
+                        ]
+                        if weight_values:
+                            metrics[f"group_dvao_weight/{key}/mean"] = float(np.mean(weight_values))
+                        std_values = [float(row.get(key, 0.0)) for row in group_dvao_stds if isinstance(row, dict)]
+                        if std_values:
+                            metrics[f"group_dvao_reward_std/{key}/mean"] = float(np.mean(std_values))
+                if dvao_reward_keys and self.config.algorithm.adv_estimator in (
+                    "focal_dvao",
+                    AdvantageEstimator.FOCAL_DVAO,
+                ):
+                    group_focal_dvao_weights = batch.non_tensor_batch.get("group_focal_dvao_weight", [])
+                    group_focal_dvao_variance_weights = batch.non_tensor_batch.get(
+                        "group_focal_dvao_variance_weight",
+                        [],
+                    )
+                    group_focal_dvao_stds = batch.non_tensor_batch.get("group_focal_dvao_reward_std", [])
+                    for key in dvao_reward_keys:
+                        if key in batch.non_tensor_batch:
+                            vals = np.asarray(batch.non_tensor_batch[key], dtype=np.float32)
+                            metrics[f"focal_dvao/{key}/mean"] = float(np.mean(vals))
+                            metrics[f"focal_dvao/{key}/std"] = float(np.std(vals))
+                            metrics[f"focal_dvao/{key}/max"] = float(np.max(vals))
+                            metrics[f"focal_dvao/{key}/min"] = float(np.min(vals))
+                        weight_values = [
+                            float(row.get(key, 0.0)) for row in group_focal_dvao_weights if isinstance(row, dict)
+                        ]
+                        if weight_values:
+                            metrics[f"group_focal_dvao_weight/{key}/mean"] = float(np.mean(weight_values))
+                        variance_weight_values = [
+                            float(row.get(key, 0.0))
+                            for row in group_focal_dvao_variance_weights
+                            if isinstance(row, dict)
+                        ]
+                        if variance_weight_values:
+                            metrics[f"group_focal_dvao_variance_weight/{key}/mean"] = float(
+                                np.mean(variance_weight_values)
+                            )
+                        std_values = [
+                            float(row.get(key, 0.0)) for row in group_focal_dvao_stds if isinstance(row, dict)
+                        ]
+                        if std_values:
+                            metrics[f"group_focal_dvao_reward_std/{key}/mean"] = float(np.mean(std_values))
                 metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
                 # TODO: implement actual tflpo and theoretical tflpo
                 n_gpus = self.resource_pool_manager.get_n_gpus()

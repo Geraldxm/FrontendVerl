@@ -660,6 +660,9 @@ class AlgoConfig(BaseConfig):
 
             For backward compatibility, you can still pass a dict, which will be converted to
             RolloutCorrectionConfig automatically.
+        dvao_reward_keys (Optional[list[str]]): Keys in non_tensor_batch used as DVAO-style reward dimensions.
+        dvao_reward_weights (Optional[list[float]]): Base weights for pure DVAO dynamic variance-adaptive aggregation.
+            For focal_dvao, use focal.base_weights instead to avoid applying base weights twice.
     """
 
     gamma: float = 1.0
@@ -683,3 +686,9 @@ class AlgoConfig(BaseConfig):
     # gdpo_reward_weights: per-dimension weights for aggregation (default: equal weights).
     gdpo_reward_keys: Optional[list[str]] = None
     gdpo_reward_weights: Optional[list[float]] = None
+    # DVAO (Dynamic Variance-adaptive Advantage Optimization) settings.
+    # dvao_reward_keys: keys in non_tensor_batch that correspond to individual reward dimensions.
+    # dvao_reward_weights: pure DVAO base weights before group-variance adaptation (default: equal weights).
+    #   focal_dvao intentionally rejects this field and uses focal.base_weights instead.
+    dvao_reward_keys: Optional[list[str]] = None
+    dvao_reward_weights: Optional[list[float]] = None

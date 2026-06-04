@@ -108,6 +108,8 @@ class AdvantageEstimator(str, Enum):
     OPTIMAL_TOKEN_BASELINE = "optimal_token_baseline"
     TIR_OPTIMAL_TOKEN_BASELINE = "tir_optimal_token_baseline"
     GDPO = "gdpo"
+    DVAO = "dvao"
+    FOCAL_DVAO = "focal_dvao"
 
 
 ADV_ESTIMATOR_REGISTRY: dict[str, Any] = {}
@@ -466,6 +468,471 @@ def compute_gdpo_outcome_advantage(
     advantages = verl_F.masked_whiten(new_advantage, response_mask) * response_mask
 
     return advantages, advantages
+
+
+def _get_reward_key_list(config: AlgoConfig, config_key: str, estimator_name: str) -> list[str]:
+    """
+    输入: 算法配置、配置字段名和 estimator 名称。
+    输出: 用户显式配置的多维 reward key 列表。
+    意图: DVAO/GDPO 类方法必须明确知道哪些 reward 维度参与聚合，避免误用调试字段。
+    """
+    reward_keys = config.get(config_key, None)
+    if reward_keys is None:
+        raise ValueError(f"{estimator_name} requires 'algorithm.{config_key}' listing reward component keys.")
+    if hasattr(reward_keys, "tolist"):
+        reward_keys = reward_keys.tolist()
+    reward_keys = list(reward_keys)
+    if not reward_keys:
+        raise ValueError(f"{estimator_name} requires non-empty 'algorithm.{config_key}'.")
+    if len(set(reward_keys)) != len(reward_keys):
+        raise ValueError(f"algorithm.{config_key} contains duplicate keys: {reward_keys}")
+    return reward_keys
+
+
+def _build_reward_weight_tensor(
+    *,
+    raw_weights: Any,
+    num_rewards: int,
+    device: torch.device,
+    config_key: str,
+) -> torch.Tensor:
+    """
+    输入: 用户配置的基础权重、reward 维度数和目标设备。
+    输出: 和为 1 的 float32 权重张量。
+    意图: 统一 DVAO 的显式权重校验；空配置退化为等权。
+    """
+    if raw_weights is None:
+        raw_weights = []
+    if hasattr(raw_weights, "tolist"):
+        raw_weights = raw_weights.tolist()
+    raw_weights = list(raw_weights)
+
+    if not raw_weights:
+        return torch.full((num_rewards,), 1.0 / num_rewards, dtype=torch.float32, device=device)
+
+    if len(raw_weights) != num_rewards:
+        raise ValueError(f"algorithm.{config_key} length mismatch: expected {num_rewards}, got {len(raw_weights)}")
+
+    weights = torch.tensor(raw_weights, dtype=torch.float32, device=device)
+    if torch.any(weights < 0):
+        raise ValueError(f"algorithm.{config_key} must be non-negative")
+
+    weight_sum = torch.sum(weights)
+    if float(weight_sum.item()) <= 0:
+        raise ValueError(f"algorithm.{config_key} must sum to a positive value")
+    return weights / weight_sum
+
+
+def _has_configured_reward_weights(raw_weights: Any) -> bool:
+    """
+    输入: 用户配置的可选 reward 权重。
+    输出: 是否显式配置了非空权重。
+    意图: focal+DVAO 只允许通过 focal.base_weights 注入基础权重，避免重复计权。
+    """
+    if raw_weights is None:
+        return False
+    if hasattr(raw_weights, "tolist"):
+        raw_weights = raw_weights.tolist()
+    if isinstance(raw_weights, (list, tuple)):
+        return bool(raw_weights)
+    try:
+        return bool(list(raw_weights))
+    except TypeError:
+        return True
+
+
+def _extract_scalar_reward_matrix(
+    *,
+    non_tensor_batch: dict,
+    reward_keys: list[str],
+    batch_size: int,
+    device: torch.device,
+    estimator_name: str,
+) -> torch.Tensor:
+    """
+    输入: non_tensor_batch 中按样本对齐的 reward 字段。
+    输出: shape=[batch_size, num_rewards] 的标量 reward 矩阵。
+    意图: DVAO 只消费样本级多目标 reward，不直接依赖 token-level reward tensor。
+    """
+    reward_columns = []
+    for key in reward_keys:
+        if key not in non_tensor_batch:
+            raise ValueError(
+                f"{estimator_name} reward key '{key}' not found in non_tensor_batch. "
+                f"Available keys: {list(non_tensor_batch.keys())}."
+            )
+        values = np.asarray(non_tensor_batch[key], dtype=np.float32)
+        if values.shape[0] != batch_size:
+            raise ValueError(
+                f"{estimator_name} reward key '{key}' length mismatch: expected {batch_size}, got {values.shape[0]}"
+            )
+        reward_columns.append(torch.as_tensor(values, dtype=torch.float32, device=device).reshape(batch_size))
+    return torch.stack(reward_columns, dim=1)
+
+
+def _extract_valid_sample_mask(
+    *,
+    non_tensor_batch: dict,
+    batch_size: int,
+    device: torch.device,
+    estimator_name: str,
+) -> torch.Tensor:
+    """
+    输入: reward postprocess 写回的可选 valid-sample 标记。
+    输出: shape=[batch_size] 的 bool mask。
+    意图: DVAO 类 advantage 只用有效 reward 样本估计组内统计，避免 reward server 失败样本污染方差。
+    """
+    if "reward_valid_sample" not in non_tensor_batch:
+        return torch.ones(batch_size, dtype=torch.bool, device=device)
+
+    values = np.asarray(non_tensor_batch["reward_valid_sample"], dtype=np.float32)
+    if values.shape[0] != batch_size:
+        raise ValueError(
+            f"{estimator_name} reward_valid_sample length mismatch: expected {batch_size}, got {values.shape[0]}"
+        )
+    return torch.as_tensor(values.reshape(batch_size) > 0.5, dtype=torch.bool, device=device)
+
+
+def _extract_sample_weight_matrix(
+    *,
+    non_tensor_batch: dict,
+    reward_keys: list[str],
+    batch_size: int,
+    device: torch.device,
+    field_name: str,
+    estimator_name: str,
+) -> torch.Tensor:
+    """
+    输入: non_tensor_batch 中每条样本一个 dict 的 group-level 权重字段。
+    输出: shape=[batch_size, num_rewards] 且逐行归一化的权重矩阵。
+    意图: focal+DVAO 消费 focal postprocess 产生的 group_focal_weight，而不是重新计算 focal。
+    """
+    if field_name not in non_tensor_batch:
+        raise ValueError(f"{estimator_name} requires '{field_name}' in non_tensor_batch.")
+
+    rows = non_tensor_batch[field_name]
+    if hasattr(rows, "tolist"):
+        rows = rows.tolist()
+    rows = list(rows)
+    if len(rows) != batch_size:
+        raise ValueError(f"{estimator_name} {field_name} length mismatch: expected {batch_size}, got {len(rows)}")
+
+    matrix: list[list[float]] = []
+    for row_idx, row in enumerate(rows):
+        if not isinstance(row, dict):
+            raise ValueError(f"{estimator_name} {field_name}[{row_idx}] must be a dict, got {type(row).__name__}.")
+        values = []
+        for reward_key in reward_keys:
+            if reward_key not in row:
+                raise ValueError(f"{estimator_name} {field_name}[{row_idx}] missing reward key '{reward_key}'.")
+            values.append(float(row[reward_key]))
+        matrix.append(values)
+
+    weights = torch.as_tensor(matrix, dtype=torch.float32, device=device)
+    if torch.any(weights < 0):
+        raise ValueError(f"{estimator_name} {field_name} must be non-negative.")
+    weight_sums = torch.sum(weights, dim=1, keepdim=True)
+    if torch.any(weight_sums <= 0):
+        raise ValueError(f"{estimator_name} {field_name} rows must sum to a positive value.")
+    return weights / weight_sums
+
+
+def _dicts_from_tensor(*, values: torch.Tensor, reward_keys: list[str]) -> list[dict[str, float]]:
+    values_np = values.detach().cpu().numpy()
+    return [
+        {key: float(values_np[sample_idx, key_idx]) for key_idx, key in enumerate(reward_keys)}
+        for sample_idx in range(values_np.shape[0])
+    ]
+
+
+def _write_dvao_debug_info(
+    *,
+    non_tensor_batch: dict,
+    reward_keys: list[str],
+    sample_weights: torch.Tensor,
+    group_means: torch.Tensor,
+    group_stds: torch.Tensor,
+    field_prefix: str = "dvao",
+    variance_weights: Optional[torch.Tensor] = None,
+    write_generic_fields: bool = True,
+) -> None:
+    """
+    输入: 每条样本对齐的 DVAO 权重、组内均值和组内标准差。
+    输出: 写回 non_tensor_batch 的对象数组，供 trainer metrics 和 rollout dump 复用。
+    """
+    weight_dicts = _dicts_from_tensor(values=sample_weights, reward_keys=reward_keys)
+    mean_dicts = _dicts_from_tensor(values=group_means, reward_keys=reward_keys)
+    std_dicts = _dicts_from_tensor(values=group_stds, reward_keys=reward_keys)
+
+    if write_generic_fields:
+        non_tensor_batch["sample_dvao_weight"] = np.asarray(weight_dicts, dtype=object)
+        non_tensor_batch["group_dvao_weight"] = np.asarray(weight_dicts, dtype=object)
+        non_tensor_batch["group_dvao_reward_mean"] = np.asarray(mean_dicts, dtype=object)
+        non_tensor_batch["group_dvao_reward_std"] = np.asarray(std_dicts, dtype=object)
+
+    if field_prefix != "dvao":
+        non_tensor_batch[f"sample_{field_prefix}_weight"] = np.asarray(weight_dicts, dtype=object)
+        non_tensor_batch[f"group_{field_prefix}_weight"] = np.asarray(weight_dicts, dtype=object)
+        non_tensor_batch[f"group_{field_prefix}_reward_mean"] = np.asarray(mean_dicts, dtype=object)
+        non_tensor_batch[f"group_{field_prefix}_reward_std"] = np.asarray(std_dicts, dtype=object)
+        if variance_weights is not None:
+            variance_weight_dicts = _dicts_from_tensor(values=variance_weights, reward_keys=reward_keys)
+            non_tensor_batch[f"group_{field_prefix}_variance_weight"] = np.asarray(
+                variance_weight_dicts,
+                dtype=object,
+            )
+
+
+def _compute_dvao_like_outcome_advantage(
+    *,
+    token_level_rewards: torch.Tensor,
+    response_mask: torch.Tensor,
+    index: np.ndarray,
+    non_tensor_batch: dict,
+    reward_keys: list[str],
+    reward_scores: torch.Tensor,
+    prior_weight_matrix: torch.Tensor,
+    valid_sample_mask: torch.Tensor,
+    epsilon: float,
+    estimator_name: str,
+    field_prefix: str,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    输入: 多维 reward、每条样本的先验权重和 valid-sample mask。
+    输出: DVAO 类 outcome advantage/returns。
+    意图: 让纯 DVAO 与 focal+DVAO 共享组内统计、边界退化和 debug 字段写回逻辑。
+    """
+    batch_size = token_level_rewards.shape[0]
+    device = token_level_rewards.device
+    scalar_advantages = torch.zeros(batch_size, dtype=torch.float32, device=device)
+    sample_weights = torch.zeros((batch_size, len(reward_keys)), dtype=torch.float32, device=device)
+    group_means = torch.zeros_like(sample_weights)
+    group_stds = torch.zeros_like(sample_weights)
+    variance_weights = torch.zeros_like(sample_weights)
+
+    id2indices: dict[Any, list[int]] = defaultdict(list)
+    for sample_idx, group_id in enumerate(index):
+        id2indices[group_id].append(sample_idx)
+
+    for group_indices in id2indices.values():
+        group_index_tensor = torch.tensor(group_indices, dtype=torch.long, device=device)
+        group_valid_mask = valid_sample_mask.index_select(0, group_index_tensor)
+        valid_group_indices = group_index_tensor[group_valid_mask]
+        if len(valid_group_indices) == 0:
+            continue
+
+        group_rewards = reward_scores.index_select(0, group_index_tensor)
+        valid_group_rewards = reward_scores.index_select(0, valid_group_indices)
+        group_mean = torch.mean(valid_group_rewards, dim=0)
+        centered_valid_rewards = valid_group_rewards - group_mean
+        group_var = torch.mean(centered_valid_rewards * centered_valid_rewards, dim=0)
+        group_std = torch.sqrt(torch.clamp(group_var, min=0.0))
+
+        group_prior_weights = prior_weight_matrix.index_select(0, valid_group_indices)
+        prior_weights = torch.mean(group_prior_weights, dim=0)
+        prior_weight_sum = torch.sum(prior_weights)
+        if float(prior_weight_sum.item()) <= epsilon:
+            raise ValueError(f"{estimator_name} group prior weights must sum to a positive value.")
+        prior_weights = prior_weights / prior_weight_sum
+
+        variance_weight_denominator = torch.sum(group_std)
+        if float(variance_weight_denominator.item()) > epsilon:
+            group_variance_weights = group_std / variance_weight_denominator
+        else:
+            group_variance_weights = torch.zeros_like(group_std)
+
+        dynamic_weight_denominator = torch.sum(prior_weights * group_std)
+        if len(valid_group_indices) <= 1 or float(dynamic_weight_denominator.item()) <= epsilon:
+            dynamic_weights = torch.zeros_like(prior_weights)
+            group_advantages = torch.zeros(len(group_indices), dtype=torch.float32, device=device)
+        else:
+            dynamic_weights = prior_weights * group_std / dynamic_weight_denominator
+            component_advantages = (group_rewards - group_mean) / (group_std + epsilon)
+            group_advantages = torch.sum(component_advantages * dynamic_weights, dim=1)
+            group_advantages = torch.where(
+                group_valid_mask,
+                group_advantages,
+                torch.zeros_like(group_advantages),
+            )
+
+        scalar_advantages[group_index_tensor] = group_advantages
+        sample_weights[group_index_tensor] = dynamic_weights
+        group_means[group_index_tensor] = group_mean
+        group_stds[group_index_tensor] = group_std
+        variance_weights[group_index_tensor] = group_variance_weights
+
+    _write_dvao_debug_info(
+        non_tensor_batch=non_tensor_batch,
+        reward_keys=reward_keys,
+        sample_weights=sample_weights,
+        group_means=group_means,
+        group_stds=group_stds,
+        field_prefix=field_prefix,
+        variance_weights=variance_weights,
+    )
+
+    advantages = scalar_advantages.unsqueeze(-1) * response_mask
+    return advantages, advantages
+
+
+@register_adv_est(AdvantageEstimator.DVAO)
+def compute_dvao_outcome_advantage(
+    token_level_rewards: torch.Tensor,
+    response_mask: torch.Tensor,
+    index: Optional[np.ndarray] = None,
+    epsilon: float = 1e-6,
+    config: Optional[AlgoConfig] = None,
+    non_tensor_batch: Optional[dict] = None,
+    batch: Optional[dict] = None,
+    **kwargs,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    DVAO: Dynamic Variance-adaptive Advantage Optimization.
+
+    For each rollout group and reward dimension k:
+        A_k = (r_k - mean_group(r_k)) / (std_group(r_k) + epsilon)
+        w'_k = w_k * std_group(r_k) / sum_l(w_l * std_group(r_l))
+        A_DVAO = sum_k(w'_k * A_k)
+
+    The group std uses the population variance denominator G to match the DVAO
+    derivation. The final combined advantage is not batch-whitened.
+    """
+    del batch, kwargs
+    if config is None:
+        raise ValueError("DVAO requires algorithm config.")
+    if non_tensor_batch is None:
+        raise ValueError("DVAO requires non_tensor_batch for per-dimension reward extraction.")
+    if index is None:
+        raise ValueError("DVAO requires rollout group index, usually non_tensor_batch['uid'].")
+
+    with torch.no_grad():
+        batch_size = token_level_rewards.shape[0]
+        if len(index) != batch_size:
+            raise ValueError(f"DVAO index length mismatch: expected {batch_size}, got {len(index)}")
+
+        device = token_level_rewards.device
+        reward_keys = _get_reward_key_list(
+            config=config,
+            config_key="dvao_reward_keys",
+            estimator_name="DVAO",
+        )
+        reward_scores = _extract_scalar_reward_matrix(
+            non_tensor_batch=non_tensor_batch,
+            reward_keys=reward_keys,
+            batch_size=batch_size,
+            device=device,
+            estimator_name="DVAO",
+        )
+        base_weights = _build_reward_weight_tensor(
+            raw_weights=config.get("dvao_reward_weights", None),
+            num_rewards=len(reward_keys),
+            device=device,
+            config_key="dvao_reward_weights",
+        )
+        prior_weight_matrix = base_weights.unsqueeze(0).expand(batch_size, -1)
+        valid_sample_mask = _extract_valid_sample_mask(
+            non_tensor_batch=non_tensor_batch,
+            batch_size=batch_size,
+            device=device,
+            estimator_name="DVAO",
+        )
+
+        return _compute_dvao_like_outcome_advantage(
+            token_level_rewards=token_level_rewards,
+            response_mask=response_mask,
+            index=index,
+            non_tensor_batch=non_tensor_batch,
+            reward_keys=reward_keys,
+            reward_scores=reward_scores,
+            prior_weight_matrix=prior_weight_matrix,
+            valid_sample_mask=valid_sample_mask,
+            epsilon=epsilon,
+            estimator_name="DVAO",
+            field_prefix="dvao",
+        )
+
+
+@register_adv_est(AdvantageEstimator.FOCAL_DVAO)
+def compute_focal_dvao_outcome_advantage(
+    token_level_rewards: torch.Tensor,
+    response_mask: torch.Tensor,
+    index: Optional[np.ndarray] = None,
+    epsilon: float = 1e-6,
+    config: Optional[AlgoConfig] = None,
+    non_tensor_batch: Optional[dict] = None,
+    batch: Optional[dict] = None,
+    **kwargs,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Focal+DVAO outcome advantage.
+
+    For each rollout group and reward dimension k:
+        A_k = (r_k - mean_group(r_k)) / (std_group(r_k) + epsilon)
+        w'_k = focal_weight_k * std_group(r_k) / sum_l(focal_weight_l * std_group(r_l))
+        A = sum_k(w'_k * A_k)
+
+    `algorithm.dvao_reward_weights` is intentionally unsupported here. Use
+    `algorithm.focal.base_weights` so the base prior is applied only once.
+    """
+    del batch, kwargs
+    if config is None:
+        raise ValueError("Focal DVAO requires algorithm config.")
+    if non_tensor_batch is None:
+        raise ValueError("Focal DVAO requires non_tensor_batch for per-dimension reward extraction.")
+    if index is None:
+        raise ValueError("Focal DVAO requires rollout group index, usually non_tensor_batch['uid'].")
+    if _has_configured_reward_weights(config.get("dvao_reward_weights", None)):
+        raise ValueError(
+            "Focal DVAO does not support algorithm.dvao_reward_weights; "
+            "use algorithm.focal.base_weights to configure base rubric weights."
+        )
+
+    with torch.no_grad():
+        batch_size = token_level_rewards.shape[0]
+        if len(index) != batch_size:
+            raise ValueError(f"Focal DVAO index length mismatch: expected {batch_size}, got {len(index)}")
+
+        device = token_level_rewards.device
+        reward_keys = _get_reward_key_list(
+            config=config,
+            config_key="dvao_reward_keys",
+            estimator_name="Focal DVAO",
+        )
+        reward_scores = _extract_scalar_reward_matrix(
+            non_tensor_batch=non_tensor_batch,
+            reward_keys=reward_keys,
+            batch_size=batch_size,
+            device=device,
+            estimator_name="Focal DVAO",
+        )
+        prior_weight_matrix = _extract_sample_weight_matrix(
+            non_tensor_batch=non_tensor_batch,
+            reward_keys=reward_keys,
+            batch_size=batch_size,
+            device=device,
+            field_name="group_focal_weight",
+            estimator_name="Focal DVAO",
+        )
+        valid_sample_mask = _extract_valid_sample_mask(
+            non_tensor_batch=non_tensor_batch,
+            batch_size=batch_size,
+            device=device,
+            estimator_name="Focal DVAO",
+        )
+
+        return _compute_dvao_like_outcome_advantage(
+            token_level_rewards=token_level_rewards,
+            response_mask=response_mask,
+            index=index,
+            non_tensor_batch=non_tensor_batch,
+            reward_keys=reward_keys,
+            reward_scores=reward_scores,
+            prior_weight_matrix=prior_weight_matrix,
+            valid_sample_mask=valid_sample_mask,
+            epsilon=epsilon,
+            estimator_name="Focal DVAO",
+            field_prefix="focal_dvao",
+        )
 
 
 @register_adv_est(AdvantageEstimator.GRPO_PASSK)  # or simply: @register_adv_est("grpo_passk")

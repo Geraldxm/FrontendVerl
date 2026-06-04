@@ -201,6 +201,13 @@ class TestFocalRewardPostprocess(unittest.TestCase):
             expected_direct_scores,
             atol=1e-6,
         )
+        group_focal_weights = result.derived_extra_info["group_focal_weight"].tolist()
+        self.assertEqual(len(group_focal_weights), 4)
+        self.assertIn("reward_signal_color_scheme", group_focal_weights[0])
+        self.assertNotIn("color_scheme", group_focal_weights[0])
+        self.assertAlmostEqual(sum(group_focal_weights[0].values()), 1.0, places=6)
+        self.assertIn("color_scheme", result.dump_extra_info["group_mean_reward_weight"][0])
+        self.assertNotIn("reward_signal_color_scheme", result.dump_extra_info["group_mean_reward_weight"][0])
 
     def test_invalid_group_receives_batch_level_mean_compensation(self):
         batch = _build_batch(["group_a", "group_a", "group_b", "group_b"])
