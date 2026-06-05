@@ -24,6 +24,7 @@ from verl.trainer.ppo.ray_trainer import RayPPOTrainer, _overlay_dvao_dump_field
 class RayTrainerDumpTest(unittest.TestCase):
     def test_dump_generations_uses_compact_schema(self):
         reward_extra_infos = {
+            "task_id": ["task_123"],
             "reward_raw_score": [0.0],
             "reward_direct_score": [5.8181818],
             "reward_focal_score": [2.337951],
@@ -67,7 +68,14 @@ class RayTrainerDumpTest(unittest.TestCase):
             ],
             "overall_status": ["success"],
             "error_message": [""],
-            "render_info": [{"status": "success", "details": {"desktop": "ok"}}],
+            "render_info": [
+                {
+                    "status": "success",
+                    "debug_info": {"timings_ms": {"set_content": 3.0}, "html_chars": 1234},
+                    "details": {"desktop": "ok"},
+                }
+            ],
+            "render_debug_info": [{"timings_ms": {"set_content": 3.0}, "html_chars": 1234}],
             "judge_info": [{"status": "success", "response": "fine"}],
             "reward_signal_format_score": [10.0],
             "reward_detail": [
@@ -116,6 +124,7 @@ class RayTrainerDumpTest(unittest.TestCase):
                 "output",
                 "gts",
                 "step",
+                "task_id",
                 "reward_scores",
                 "sample_reward_signal",
                 "sample_reward_weight",
@@ -124,6 +133,7 @@ class RayTrainerDumpTest(unittest.TestCase):
                 "reward_others",
                 "status",
                 "render_info",
+                "render_debug_info",
                 "judge_info",
             }
             self.assertEqual(set(row.keys()), expected_keys)
@@ -132,6 +142,7 @@ class RayTrainerDumpTest(unittest.TestCase):
             self.assertEqual(row["output"], "output text")
             self.assertEqual(row["gts"], "ground truth")
             self.assertEqual(row["step"], 12)
+            self.assertEqual(row["task_id"], "task_123")
             self.assertEqual(
                 row["reward_scores"],
                 {
@@ -188,6 +199,8 @@ class RayTrainerDumpTest(unittest.TestCase):
             self.assertNotIn("focal_weights", row)
             self.assertEqual(row["status"], {"overall": "success", "error_message": ""})
             self.assertEqual(row["render_info"]["details"]["desktop"], "ok")
+            self.assertEqual(row["render_info"]["debug_info"]["timings_ms"]["set_content"], 3.0)
+            self.assertEqual(row["render_debug_info"]["html_chars"], 1234)
             self.assertEqual(row["judge_info"]["response"], "fine")
 
     def test_overlay_dvao_dump_fields_uses_advantage_weight_view(self):

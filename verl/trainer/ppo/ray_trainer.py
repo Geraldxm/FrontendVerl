@@ -404,10 +404,20 @@ def _build_generation_dump_entry(
         index=index,
         default=status_detail.get("render", {}),
     )
+    render_debug_info = _get_dump_sample_value(
+        values=reward_extra_infos_dict.get("render_debug_info"),
+        index=index,
+        default=render_info.get("debug_info", {}) if isinstance(render_info, dict) else {},
+    )
     judge_info = _get_dump_sample_value(
         values=reward_extra_infos_dict.get("judge_info"),
         index=index,
         default=status_detail.get("judge", {}),
+    )
+    task_id = _get_dump_sample_value(
+        values=reward_extra_infos_dict.get("task_id"),
+        index=index,
+        default="",
     )
 
     return {
@@ -415,6 +425,7 @@ def _build_generation_dump_entry(
         "output": make_json_serializable(output_text),
         "gts": make_json_serializable(gt_text),
         "step": make_json_serializable(step),
+        "task_id": make_json_serializable(task_id),
         "reward_scores": make_json_serializable(reward_scores),
         "sample_reward_signal": make_json_serializable(sample_reward_signal),
         "sample_reward_weight": make_json_serializable(sample_reward_weight),
@@ -428,6 +439,7 @@ def _build_generation_dump_entry(
             }
         ),
         "render_info": make_json_serializable(render_info),
+        "render_debug_info": make_json_serializable(render_debug_info),
         "judge_info": make_json_serializable(judge_info),
     }
 

@@ -490,6 +490,62 @@ class TestFocalRewardPostprocess(unittest.TestCase):
         self.assertIn("mean@2", metrics["source_a"]["reward"])
         self.assertAlmostEqual(metrics["source_a"]["reward_signal_format_score"]["mean@2"], 5.0)
 
+    def test_render_debug_info_is_dumped_and_logged_without_task_id_metric(self):
+        batch = _build_batch(["group_a", "group_a"])
+        raw_reward_tensor = torch.zeros((2, 3), dtype=torch.float32)
+        debug_info = {
+            "timings_ms": {
+                "total": 10.0,
+                "extract_html": 1.0,
+                "setup_context": 2.0,
+                "set_content": 3.0,
+                "render_wait": 0.5,
+                "screenshot_desktop": 1.5,
+                "screenshot_mobile": 2.0,
+            },
+            "timeout_stage": "",
+            "exception_type": "",
+            "html_chars": 1234,
+            "tailwind_class_count_total": 20,
+            "tailwind_class_count_unique": 15,
+        }
+        reward_extra_infos = _build_reward_extra_infos(
+            overall_statuses=["success", "success"],
+            reward_signals=[
+                _build_reward_signals(format_score=10.0),
+                _build_reward_signals(format_score=8.0),
+            ],
+        )
+        reward_extra_infos["task_id"] = np.asarray(["task_a", "task_b"], dtype=object)
+        reward_extra_infos["render_info"] = np.asarray(
+            [
+                {"status": "success", "debug_info": debug_info},
+                {"status": "success"},
+            ],
+            dtype=object,
+        )
+
+        result = postprocess_reward(
+            batch=batch,
+            raw_reward_tensor=raw_reward_tensor,
+            reward_extra_infos_dict=reward_extra_infos,
+            use_focal=False,
+            focal_config={"base_weights": []},
+        )
+
+        self.assertEqual(result.dump_extra_info["task_id"], ["task_a", "task_b"])
+        self.assertEqual(result.dump_extra_info["render_debug_info"][0]["timings_ms"]["set_content"], 3.0)
+        self.assertEqual(result.dump_extra_info["render_debug_info"][1], {})
+        self.assertAlmostEqual(result.metrics["render_debug/debug_info_present/rate"], 0.5, places=6)
+        self.assertAlmostEqual(result.metrics["render_debug/timings_ms/set_content/mean"], 3.0, places=6)
+        self.assertAlmostEqual(result.metrics["render_debug/html_chars/max"], 1234.0, places=6)
+        self.assertAlmostEqual(result.metrics["render_debug/tailwind_class_count_unique/mean"], 15.0, places=6)
+        self.assertAlmostEqual(result.metrics["render_debug/timeout_stage/none/rate"], 0.5, places=6)
+        self.assertAlmostEqual(result.metrics["render_debug/exception_type/none/rate"], 0.5, places=6)
+        self.assertFalse(any("task_id" in key for key in result.metrics))
+        self.assertNotIn("task_id", result.validation_extra_info)
+        self.assertNotIn("render_debug_info", result.validation_extra_info)
+
 
 if __name__ == "__main__":
     unittest.main()

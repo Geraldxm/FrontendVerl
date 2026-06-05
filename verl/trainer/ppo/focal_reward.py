@@ -43,7 +43,21 @@ from verl import DataProto
 # success 表示走完了整个 judger 流程; llm_generation_error 表示 LLM 生成错误: 这两种方式都是有效的样本
 # 而其他情况则是 reward server 出故障, 如 render/judge/parse 失败
 VALID_FOCAL_OVERALL_STATUSES = frozenset({"success", "llm_generation_error"})
-RAW_REWARD_DEBUG_KEYS = ("overall_status", "error_message", "render_info", "judge_info")
+RAW_REWARD_DEBUG_KEYS = ("task_id", "overall_status", "error_message", "render_info", "judge_info")
+RENDER_DEBUG_TIMING_KEYS = (
+    "total",
+    "extract_html",
+    "setup_context",
+    "set_content",
+    "render_wait",
+    "screenshot_desktop",
+    "screenshot_mobile",
+)
+RENDER_DEBUG_SCALAR_KEYS = (
+    "html_chars",
+    "tailwind_class_count_total",
+    "tailwind_class_count_unique",
+)
 
 
 @dataclass
@@ -252,6 +266,112 @@ def _distribution_metrics(prefix: str, values: np.ndarray) -> dict[str, float]:
     }
 
 
+def _optional_float(value: Any) -> float | None:
+    """
+    输入: 可能来自 reward debug info 的任意值。
+    输出: 可聚合的 float，或 None。
+    意图: 只聚合真实数值，避免缺失字段被错误当成 0。
+    """
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(number):
+        return None
+    return number
+
+
+def _normalize_debug_category(value: Any) -> str:
+    """
+    输入: timeout stage / exception type 原始值。
+    输出: 稳定的类别名；空字符串统一为 none。
+    """
+    if value is None:
+        return "none"
+    text = str(value).strip()
+    return text or "none"
+
+
+def _extract_render_debug_infos(render_infos: list[Any]) -> tuple[list[dict[str, Any]], np.ndarray]:
+    """
+    输入: batch 内每条样本的 render_info。
+    输出: 与 batch 对齐的 debug_info 列表，以及是否存在 debug_info 的布尔 mask。
+    意图: 将 v6 render debug 信息单独抽出，供 W&B 聚合和 rollout 快速检索。
+    """
+    render_debug_infos: list[dict[str, Any]] = []
+    present_mask = np.zeros(len(render_infos), dtype=bool)
+    for idx, render_info in enumerate(render_infos):
+        debug_info = render_info.get("debug_info", {}) if isinstance(render_info, dict) else {}
+        if isinstance(debug_info, dict) and debug_info:
+            render_debug_infos.append(make_json_serializable(debug_info))
+            present_mask[idx] = True
+        else:
+            render_debug_infos.append({})
+    return render_debug_infos, present_mask
+
+
+def _add_render_debug_metrics(
+    *,
+    metrics: dict[str, float],
+    render_debug_infos: list[dict[str, Any]],
+    present_mask: np.ndarray,
+) -> None:
+    """
+    输入: metrics 字典、每样本 render debug info、存在性 mask。
+    输出: 原地补充 render_debug/* 聚合指标。
+    意图: 只在 v6 debug 信息实际存在时记录 W&B 指标，保持旧 client 面板干净。
+    """
+    batch_size = len(render_debug_infos)
+    present_count = int(np.sum(present_mask))
+    if present_count == 0:
+        return
+
+    metrics["render_debug/debug_info_present/rate"] = float(present_count / max(1, batch_size))
+
+    for timing_key in RENDER_DEBUG_TIMING_KEYS:
+        values = []
+        for debug_info in render_debug_infos:
+            timings_ms = debug_info.get("timings_ms", {}) if isinstance(debug_info, dict) else {}
+            if not isinstance(timings_ms, dict):
+                continue
+            value = _optional_float(timings_ms.get(timing_key))
+            if value is not None:
+                values.append(value)
+        if values:
+            metrics.update(
+                _distribution_metrics(
+                    f"render_debug/timings_ms/{timing_key}",
+                    np.asarray(values, dtype=np.float64),
+                )
+            )
+
+    for scalar_key in RENDER_DEBUG_SCALAR_KEYS:
+        values = []
+        for debug_info in render_debug_infos:
+            if not isinstance(debug_info, dict):
+                continue
+            value = _optional_float(debug_info.get(scalar_key))
+            if value is not None:
+                values.append(value)
+        if values:
+            metrics.update(
+                _distribution_metrics(
+                    f"render_debug/{scalar_key}",
+                    np.asarray(values, dtype=np.float64),
+                )
+            )
+
+    for category_key in ("timeout_stage", "exception_type"):
+        counts = defaultdict(int)
+        for debug_info, present in zip(render_debug_infos, present_mask, strict=True):
+            if not present:
+                continue
+            counts[_normalize_debug_category(debug_info.get(category_key))] += 1
+        for category, count in counts.items():
+            category_slug = slugify_reward_name(category)
+            metrics[f"render_debug/{category_key}/{category_slug}/rate"] = float(count / max(1, batch_size))
+
+
 def _project_weights_to_bounds(weights: np.ndarray, *, weight_min: float, weight_max: float) -> np.ndarray:
     """
     输入: 和为 1 的 rubric 权重，以及每个维度允许的上下界。
@@ -406,6 +526,7 @@ def postprocess_reward(
         key="error_message",
         expected_length=batch_size,
     )
+    render_debug_infos, render_debug_present_mask = _extract_render_debug_infos(render_infos)
 
     # `signal_matrix` shape = [batch_size, num_signals]，是后面 direct/focal 聚合的基础。
     signal_keys = _infer_signal_keys(reward_signal_items)
@@ -546,6 +667,8 @@ def postprocess_reward(
         values = _to_list(reward_extra_infos_dict[key], key=key, expected_length=batch_size)
         # 原始嵌套字段只进入 dump，不进入 validation metrics，避免字典类型破坏聚合逻辑。
         dump_extra_info[key] = [make_json_serializable(item) for item in values]
+    if np.any(render_debug_present_mask):
+        dump_extra_info["render_debug_info"] = render_debug_infos
     dump_extra_info.update(validation_extra_info)
     dump_extra_info["reward"] = final_scores.tolist()
 
@@ -620,6 +743,11 @@ def postprocess_reward(
     metrics["reward_status/valid_sample/rate"] = float(np.mean(valid_sample_mask.astype(np.float64)))
     metrics["reward_status/llm_generation_error/rate"] = float(np.mean(llm_generation_error_mask.astype(np.float64)))
     metrics["reward_status/valid_group/rate"] = float(len(group_weights) / max(1, len(uid_to_indices)))
+    _add_render_debug_metrics(
+        metrics=metrics,
+        render_debug_infos=render_debug_infos,
+        present_mask=render_debug_present_mask,
+    )
 
     group_signal_means = np.stack([stats["mean"] for stats in uid_group_signal_stats.values()], axis=0)
     group_focal_weights = np.stack([stats["weights"] for stats in uid_group_signal_stats.values()], axis=0)
