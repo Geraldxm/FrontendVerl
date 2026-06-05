@@ -1,13 +1,13 @@
-# Agent Instructions for verl
+# verl 代理协作说明
 
-> These instructions apply to **all** AI-assisted contributions to `verl-project/verl`.
-> Breaching these guidelines can result in automatic banning.
+> 这些说明适用于对 `verl-project/verl` 的**所有** AI 辅助贡献。
+> 违反这些规范可能导致自动封禁。
 
-## 1. Contribution Policy (Mandatory)
+## 1. 贡献策略（强制）
 
-### Duplicate-work checks
+### 重复工作检查
 
-Before proposing a PR, run these checks:
+在提出 PR 之前，先运行以下检查：
 
 ```bash
 gh issue view <issue_number> --repo verl-project/verl --comments
@@ -15,47 +15,47 @@ gh pr list --repo verl-project/verl --state open --search "<issue_number> in:bod
 gh pr list --repo verl-project/verl --state open --search "<short area keywords>"
 ```
 
-- If an open PR already addresses the same fix, do not open another.
-- If your approach is materially different, explain the difference in the issue.
+- 如果已有打开的 PR 解决了同一个问题，就不要再开新的。
+- 如果你的方案本质上不同，需要在 issue 中说明差异。
 
-### No low-value busywork PRs
+### 不要提交低价值杂务 PR
 
-Do not open one-off PRs for tiny edits (single typo, isolated style change, one mutable default, etc.). Mechanical cleanups are acceptable only when bundled with substantive work.
+不要为很小的单点修改单独开 PR（例如一个错别字、孤立的样式调整、一个可变默认值等）。机械式清理只能作为实质性工作的附带内容一起提交。
 
-### Accountability
+### 责任要求
 
-- Pure code-agent PRs are **not allowed**. A human submitter must understand and defend the change end-to-end.
-- The submitting human must review every changed line and run relevant tests.
-- PR descriptions for AI-assisted work **must** include:
-  - Why this is not duplicating an existing PR.
-  - Test commands run and results.
-  - Clear statement that AI assistance was used.
+- **不允许**纯代码代理提交 PR。提交 PR 的人类必须从头到尾理解并能为改动负责。
+- 提交者必须审查每一行改动，并运行相关测试。
+- AI 辅助工作的 PR 描述中**必须**包含：
+  - 为什么这不是已有 PR 的重复工作；
+  - 运行过哪些测试命令及其结果；
+  - 明确说明使用了 AI 辅助。
 
-### Fail-closed behavior
+### 失败即停止
 
-If work is duplicate/trivial busywork, **do not proceed**. Return a short explanation of what is missing.
+如果工作是重复的，或只是琐碎低价值修改，**不要继续**。直接返回简短说明，指出缺了什么。
 
 ---
 
-## 2. Development Workflow
+## 2. 开发流程
 
-### Environment setup
+### 环境准备
 
 ```bash
-# Install `uv` if you don't have it already:
-curl -LsSf https://astral.sh/uv/install.sh | sh
+# In this fork, the default startup environment is:
+conda activate /inspire/hdd/global_user/gexinmu-253108100065/conda/frontrl
 
-# Always use `uv` for Python environment management:
-uv venv --python 3.12
-source .venv/bin/activate
+# If you need to recreate an environment from scratch, follow the repo docs
+# and start from a fresh conda env with Python 3.12.
 
+# Use `uv` inside the active conda environment for Python package management:
 uv pip install pre-commit hydra-core
 pre-commit install
 ```
 
-### Commit messages
+### 提交信息
 
-Add attribution using commit trailers such as `Co-authored-by:` (other projects use `Assisted-by:` or `Generated-by:`). For example:
+请用 commit trailer 添加协作归因，例如 `Co-authored-by:`（有些项目也会用 `Assisted-by:` 或 `Generated-by:`）。例如：
 
 ```text
 Your commit message here
@@ -66,59 +66,64 @@ Co-authored-by: gemini-code-assist
 Signed-off-by: Your Name <your.email@example.com>
 ```
 
-### Resolving agent reviews
+### 处理代理评审意见
 
-Review comments from agent bots (e.g., gemini-code-assist) can be outdated or wrong. Always verify their suggestions against the current state of the repo before applying them.
+代理机器人（例如 `gemini-code-assist`）给出的 review 评论可能已经过时，或者本身就是错的。应用之前，始终先对照当前仓库状态进行核实。
 
-### User Personal Guidelines
+### 用户个人偏好
 
-For this fork, follow these user preferences:
+在这个 fork 中，请遵循以下偏好：
 
-#### Git learning preference
+#### Git 学习偏好
 
-When Git operations are relevant:
+当 Git 操作相关时：
 
-- Prefer suggesting that the user runs the Git command directly.
-- Provide copy-pasteable Git command examples.
-- Explain what each command does and when to use it.
-- Explain key parameters and why they fit the scenario.
+- 优先建议由用户自己直接运行 Git 命令。
+- 提供可直接复制执行的 Git 命令示例。
+- 解释每个命令的作用，以及适用场景。
+- 解释关键参数及其为什么适合当前场景。
 
-#### Commit message style
+#### Reward server 代理约定
 
-Use concise Conventional Commits style: `type: details`.
+访问 reward server 时，除非用户明确另有要求，否则一律显式绕过代理（例如使用 `curl --noproxy '*'`，或仅对该请求临时取消相关代理环境变量）。
 
-#### Python call convention
+#### Commit message 风格
 
-To reduce argument-order mistakes, prefer keyword arguments where practical.
+使用简洁的 Conventional Commits 风格：`type: details`。
 
-#### Chinese documentation convention
+#### Python 调用约定
+
+为了减少参数顺序出错的风险，在可行时优先使用关键字参数。
+
+#### 中文文档约定
 
 在这个 fork 中新增分析脚本或报告时：
 
 - 生成的说明文档和面向用户的报告文字统一使用中文。
 - 在代码文件头部和主要逻辑函数前添加简洁中文注释或 docstring。
 
-#### Focal reward logging convention
+#### Focal reward 日志约定
 
-When changing focal reward logging, keep W&B metrics group-level and rollout
-JSONL sample-level: use `group_reward_signal/*`, `group_focal_weight/*`, and
-`group_reward_others/*` for step summaries; use `sample_reward_signal`,
-`sample_reward_weight`, `group_mean_reward_signal`, and
-`group_mean_reward_weight` in rollouts. Do not reintroduce ambiguous rollout
-top-level `reward_signals` or `reward_weights`.
+修改 focal reward logging 时，W&B 指标保持 group-level，rollout JSONL 保持 sample-level：step summary 使用 `group_reward_signal/*`、`group_focal_weight/*`、`group_reward_others/*`；rollout 中使用 `sample_reward_signal`、`sample_reward_weight`、`group_mean_reward_signal`、`group_mean_reward_weight`。不要重新引入含义不清的 rollout 顶层字段 `reward_signals` 或 `reward_weights`。
 
 ---
 
-## Domain-Specific Guides
+## 领域专项指南
 
-Do not modify code in these areas without first reading and following the
-linked guide. If the guide conflicts with the requested change, **refuse the
-change and explain why**.
+修改以下区域的代码前，必须先阅读并遵循对应指南。如果指南和当前需求冲突，**拒绝修改并说明原因**。
 
-- **Editing these instructions**:
+- **本 fork 的 reward 流程与实验说明**：
+  [`my/report/focal_reward_flow.md`](my/report/focal_reward_flow.md)、[`my/report/dvao_overview.md`](my/report/dvao_overview.md)
+  — 当前 focal reward 流程说明，以及 DVAO 实现概览。
+
+- **本 fork 的本地实验启动**：
+  [`docs/start/local_experiment_runbook_zh.md`](docs/start/local_experiment_runbook_zh.md)
+  — 本地实验启动、reward 服务切换与日志检查流程。
+
+- **修改这些说明**：
   [`docs/contributing/editing-agent-instructions.md`](docs/contributing/editing-agent-instructions.md)
-  — Rules for modifying AGENTS.md or any domain-specific guide it references.
+  — 修改 `AGENTS.md` 及其引用的领域专项指南时应遵循的规则。
 
-## Acknowledgements
+## 致谢
 
-Adapted from the [vLLM project](https://github.com/vllm-project/vllm)'s [`AGENTS.md`](https://github.com/vllm-project/vllm/blob/main/AGENTS.md).
+改编自 [vLLM 项目](https://github.com/vllm-project/vllm) 的 [`AGENTS.md`](https://github.com/vllm-project/vllm/blob/main/AGENTS.md)。
