@@ -30,6 +30,7 @@ class NaiveRewardManager(RewardManagerBase):
         self.is_async_reward_score = inspect.iscoroutinefunction(self.compute_score)
         self.reward_router_address = reward_router_address
         self.reward_model_tokenizer = reward_model_tokenizer
+        self.reward_kwargs = dict(config.reward.custom_reward_function.get("reward_kwargs", {}) or {})
 
     async def run_single(self, data: DataProto) -> dict:
         assert len(data) == 1, "Only support single data item"
@@ -61,14 +62,14 @@ class NaiveRewardManager(RewardManagerBase):
             None, lambda: self.tokenizer.decode(valid_response_ids, skip_special_tokens=True)
         )
 
-        extra_reward_kwargs = (
-            {
-                "reward_router_address": self.reward_router_address,
-                "reward_model_tokenizer": self.reward_model_tokenizer,
-            }
-            if self.reward_router_address is not None
-            else {}
-        )
+        extra_reward_kwargs = dict(self.reward_kwargs)
+        if self.reward_router_address is not None:
+            extra_reward_kwargs.update(
+                {
+                    "reward_router_address": self.reward_router_address,
+                    "reward_model_tokenizer": self.reward_model_tokenizer,
+                }
+            )
 
         # 调用 reward function 计算 reward
         if self.is_async_reward_score:

@@ -9,26 +9,32 @@ if [ -f "$LOCAL_CONFIG" ]; then
     source "$LOCAL_CONFIG"
 fi
 
-export REWARD_SERVER_URL="http://10.246.103.127:48002/compute_reward_v3"
+export REWARD_SERVER_URL="${REWARD_SERVER_URL:-http://10.244.143.149:48000/compute_reward_v6}"
 
 : "${MODEL_PATH:?Set MODEL_PATH in $LOCAL_CONFIG}"
+: "${WANDB_API_KEY:?Set WANDB_API_KEY in $LOCAL_CONFIG}"
+: "${WANDB_MODE:?Set WANDB_MODE in $LOCAL_CONFIG}"
+: "${TP_SIZE:?Set TP_SIZE in $LOCAL_CONFIG}"
+
 : "${EXPERIMENT_PREFIX:?Set EXPERIMENT_PREFIX before running my/train_baseline.sh}"
 : "${PROJECT_NAME:=frontend_focal}"
-: "${WANDB_API_KEY:?Set WANDB_API_KEY in $LOCAL_CONFIG}"
-: "${WANDB_MODE:=offline}"
+: "${VISUAL_JUDGE_MODE:=joint}"
 
 export EXPERIMENT_NAME="${EXPERIMENT_PREFIX}_$(basename "$MODEL_PATH")"
 
 python3 -m verl.trainer.main_ppo \
     trainer.rollout_data_dir=rollouts/$EXPERIMENT_NAME \
     algorithm.use_focal=False \
-    algorithm.focal.epsilon=0 \
-    algorithm.focal.temperature=10.0 \
-    algorithm.focal.gamma=8.0 \
+    algorithm.focal.epsilon=0.05 \
+    algorithm.focal.temperature=5.0 \
+    algorithm.focal.gamma=3.0 \
+    algorithm.focal.weight_min=0.05 \
+    algorithm.focal.weight_max=0.3 \
     trainer.resume_mode="auto" \
-    reward.custom_reward_function.path=my/focal_reward_client_v3.py \
+    reward.custom_reward_function.path=my/naive_single_reward_client_v6.py \
     reward.custom_reward_function.name=compute_score \
     reward.reward_model.enable=False \
+    +reward.custom_reward_function.reward_kwargs.visual_judge_mode=$VISUAL_JUDGE_MODE \
     algorithm.adv_estimator=grpo \
     data.train_files=my/data/websight_train_a11y_4k_nothink.parquet \
     data.val_files=my/data/websight_val_a11y_4k_nothink.parquet \
@@ -38,7 +44,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.4 \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=2 \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=2 \
-    actor_rollout_ref.rollout.tensor_model_parallel_size=4 \
+    actor_rollout_ref.rollout.tensor_model_parallel_size=$TP_SIZE \
     actor_rollout_ref.rollout.n=16 \
     data.max_prompt_length=4096 \
     data.max_response_length=16384 \
@@ -62,9 +68,9 @@ python3 -m verl.trainer.main_ppo \
     trainer.logger='["console","wandb"]' \
     trainer.project_name=$PROJECT_NAME \
     trainer.experiment_name=$EXPERIMENT_NAME \
-    trainer.n_gpus_per_node=4 \
+    trainer.n_gpus_per_node=$TP_SIZE \
     trainer.nnodes=1 \
-    trainer.save_freq=10 \
+    trainer.save_freq=15 \
     trainer.total_epochs=5 \
     trainer.test_freq=5 \
     trainer.val_before_train=True
