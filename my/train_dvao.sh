@@ -9,7 +9,7 @@ if [ -f "$LOCAL_CONFIG" ]; then
     source "$LOCAL_CONFIG"
 fi
 
-export REWARD_SERVER_URL="${REWARD_SERVER_URL:-http://10.246.120.39:48004/compute_reward_v5}"
+export REWARD_SERVER_URL="${REWARD_SERVER_URL:-http://10.245.26.223:48000/compute_reward_v6}"
 
 : "${MODEL_PATH:?Set MODEL_PATH in $LOCAL_CONFIG}"
 : "${WANDB_API_KEY:?Set WANDB_API_KEY in $LOCAL_CONFIG}"
@@ -28,7 +28,7 @@ python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=dvao \
     algorithm.dvao_reward_keys='["reward_signal_format_score","reward_signal_console_errors","reward_signal_network_violations","reward_signal_a11y_score","reward_signal_element_hit_rate","reward_signal_instructional_alignment","reward_signal_visual_elements","reward_signal_layout_and_cohesion"]' \
     trainer.resume_mode="auto" \
-    reward.custom_reward_function.path=my/naive_single_reward_client_v5.py \
+    reward.custom_reward_function.path=my/naive_single_reward_client_v6.py \
     reward.custom_reward_function.name=compute_score \
     +reward.custom_reward_function.reward_kwargs.visual_judge_mode=$VISUAL_JUDGE_MODE \
     reward.reward_model.enable=False \
@@ -66,7 +66,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.experiment_name=$EXPERIMENT_NAME \
     trainer.n_gpus_per_node=$TP_SIZE \
     trainer.nnodes=1 \
-    trainer.save_freq=20 \
+    trainer.save_freq=15 \
     trainer.total_epochs=5 \
     trainer.test_freq=5 \
     trainer.val_before_train=True

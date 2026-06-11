@@ -9,7 +9,7 @@ if [ -f "$LOCAL_CONFIG" ]; then
     source "$LOCAL_CONFIG"
 fi
 
-export REWARD_SERVER_URL="${REWARD_SERVER_URL:-http://10.244.79.226:48004/compute_reward_v5}"
+export REWARD_SERVER_URL="${REWARD_SERVER_URL:-http://10.244.157.7:48000/compute_reward_v6}"
 
 : "${MODEL_PATH:?Set MODEL_PATH in $LOCAL_CONFIG}"
 : "${WANDB_API_KEY:?Set WANDB_API_KEY in $LOCAL_CONFIG}"
@@ -33,7 +33,7 @@ python3 -m verl.trainer.main_ppo \
     algorithm.focal.weight_min=0.05 \
     algorithm.focal.weight_max=0.3 \
     trainer.resume_mode="auto" \
-    reward.custom_reward_function.path=my/naive_single_reward_client_v5.py \
+    reward.custom_reward_function.path=my/naive_single_reward_client_v6.py \
     reward.custom_reward_function.name=compute_score \
     +reward.custom_reward_function.reward_kwargs.visual_judge_mode=$VISUAL_JUDGE_MODE \
     reward.reward_model.enable=False \
@@ -71,7 +71,7 @@ python3 -m verl.trainer.main_ppo \
     trainer.experiment_name=$EXPERIMENT_NAME \
     trainer.n_gpus_per_node=$TP_SIZE \
     trainer.nnodes=1 \
-    trainer.save_freq=20 \
+    trainer.save_freq=15 \
     trainer.total_epochs=5 \
     trainer.test_freq=5 \
     trainer.val_before_train=True
