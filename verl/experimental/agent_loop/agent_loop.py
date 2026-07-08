@@ -61,6 +61,20 @@ logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 DEFAULT_ROUTING_CACHE_SIZE = 10000
 
 
+def _align_reward_extra_keys(outputs: list[DataProto]) -> None:
+    reward_extra_keys = sorted(
+        {key for output in outputs for key in output.meta_info.get("reward_extra_keys", [])}
+    )
+    if not reward_extra_keys:
+        return
+
+    for output in outputs:
+        output.meta_info["reward_extra_keys"] = reward_extra_keys
+        for key in reward_extra_keys:
+            if key not in output.non_tensor_batch:
+                output.non_tensor_batch[key] = np.full(len(output), None, dtype=object)
+
+
 @ray.remote
 class GlobalRequestLoadBalancer:
     """Global sticky-session + in-flight load balancer shared by all AgentLoopWorkers."""
@@ -1010,9 +1024,9 @@ class AgentLoopWorker:
 
         # add reward_extra_info to non_tensor_batch
         reward_extra_infos = [input.extra_fields.get("reward_extra_info", {}) for input in inputs]
-        reward_extra_keys = list(reward_extra_infos[0].keys())
+        reward_extra_keys = sorted({key for info in reward_extra_infos for key in info})
         for key in reward_extra_keys:
-            non_tensor_batch[key] = np.array([info[key] for info in reward_extra_infos])
+            non_tensor_batch[key] = np.array([info.get(key) for info in reward_extra_infos], dtype=object)
 
         # Add multi_modal_inputs to non_tensor_batch if any samples have them
         multi_modal_inputs_list = [input.multi_modal_inputs for input in inputs]
@@ -1255,6 +1269,7 @@ class AgentLoopManager:
         )
         if self.stream_teacher_with_rollout:
             await self.teacher_model_manager.sleep()
+        _align_reward_extra_keys(outputs)
         output = DataProto.concat(outputs)
 
         # calculate performance metrics

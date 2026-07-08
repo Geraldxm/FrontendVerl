@@ -28,8 +28,10 @@ from verl.experimental.agent_loop.agent_loop import (
     AgentLoopWorker,
     DictConfigWrap,
     _InternalAgentLoopOutput,
+    _align_reward_extra_keys,
 )
 from verl.experimental.agent_loop.single_turn_agent_loop import SingleTurnAgentLoop
+from verl.protocol import DataProto
 from verl.utils.dataset.rl_dataset import RLHFDataset
 from verl.workers.rollout.replica import TokenOutput
 
@@ -131,6 +133,7 @@ def _to_internal(
     num_turns: int,
     prompt_len: int,
     response_len: int,
+    reward_score: Optional[float] = None,
 ) -> _InternalAgentLoopOutput:
     prompt_ids = _pad_1d(output_prompt_ids, length=prompt_len, pad_id=0)
     response_ids = _pad_1d(output_response_ids, length=response_len, pad_id=0)
@@ -159,7 +162,7 @@ def _to_internal(
         routed_experts=None,
         multi_modal_inputs=None,
         multi_modal_data=None,
-        reward_score=None,
+        reward_score=reward_score,
         num_turns=num_turns,
         metrics=metrics,
         extra_fields=extra_fields,
@@ -250,6 +253,36 @@ async def test_agent_loop_extra_fields_schema_stable_for_training_concat_on_cpu(
     # And the list-typed fields are actually lists (not missing / scalar).
     assert merged.non_tensor_batch["turn_scores"][0] == []
     assert merged.non_tensor_batch["tool_rewards"][0] == []
+
+
+def test_agent_loop_reward_extra_keys_stable_for_concat_on_cpu():
+    dummy_worker = type(
+        "_DummyWorker",
+        (),
+        {"reward_loop_worker_handles": [], "distillation_enabled": False, "stream_teacher_with_rollout": False},
+    )()
+
+    def make_sample(extra_info: dict[str, Any]) -> _InternalAgentLoopOutput:
+        return _to_internal(
+            output_prompt_ids=[101],
+            output_response_ids=[11, 12],
+            output_response_mask=[1, 1],
+            metrics=AgentLoopMetrics(),
+            extra_fields={"reward_extra_info": extra_info},
+            num_turns=2,
+            prompt_len=1,
+            response_len=2,
+            reward_score=1.0,
+        )
+
+    first = AgentLoopWorker._postprocess(dummy_worker, inputs=[make_sample({"acc": 1})])
+    second = AgentLoopWorker._postprocess(dummy_worker, inputs=[make_sample({"acc": 0, "status": "test_fail"})])
+
+    _align_reward_extra_keys([first, second])
+    merged = DataProto.concat([first, second])
+
+    assert merged.meta_info["reward_extra_keys"] == ["acc", "status"]
+    assert merged.non_tensor_batch["status"].tolist() == [None, "test_fail"]
 
 
 @pytest.mark.asyncio
