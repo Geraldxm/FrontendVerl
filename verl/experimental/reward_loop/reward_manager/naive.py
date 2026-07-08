@@ -43,7 +43,7 @@ class NaiveRewardManager(RewardManagerBase):
         data_source = data_item.non_tensor_batch["data_source"]
         ground_truth = data_item.non_tensor_batch["reward_model"]["ground_truth"]
         extra_info = data_item.non_tensor_batch.get("extra_info", {})
-        current_step = data_item.non_tensor_batch.get("global_steps", None)
+        current_step = data_item.non_tensor_batch.get("global_steps", data.meta_info.get("global_steps", None))
         if current_step is not None and "step" not in extra_info:
             # 将 trainer 的当前 global step 显式传给 reward client/server。
             if hasattr(current_step, "item"):
