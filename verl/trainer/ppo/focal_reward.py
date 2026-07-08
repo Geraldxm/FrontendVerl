@@ -43,6 +43,20 @@ from verl import DataProto
 # success 表示走完了整个 judger 流程; llm_generation_error 表示 LLM 生成错误: 这两种方式都是有效的样本
 # 而其他情况则是 reward server 出故障, 如 render/judge/parse 失败
 VALID_FOCAL_OVERALL_STATUSES = frozenset({"success", "llm_generation_error"})
+WEBBENCH_VALID_OVERALL_STATUSES = VALID_FOCAL_OVERALL_STATUSES | frozenset(
+    {"build_fail", "build_timeout", "test_fail", "test_timeout", "invalid_response"}
+)
+WEBBENCH_STATUS_METRIC_STATUSES = (
+    "success",
+    "invalid_response",
+    "build_fail",
+    "build_timeout",
+    "test_fail",
+    "test_timeout",
+    "invalid_request",
+    "server_error",
+    "request_error",
+)
 RAW_REWARD_DEBUG_KEYS = ("task_id", "overall_status", "error_message", "render_info", "judge_info")
 RENDER_DEBUG_TIMING_KEYS = (
     "total",
@@ -381,6 +395,8 @@ def _project_weights_to_bounds(weights: np.ndarray, *, weight_min: float, weight
     num_weights = weights.shape[0]
     weight_min = float(weight_min)
     weight_max = float(weight_max)
+    if num_weights == 1:
+        return np.ones_like(weights, dtype=np.float64)
     if weight_min < 0:
         raise ValueError("algorithm.focal.weight_min must be non-negative")
     if weight_max <= 0:
@@ -414,6 +430,7 @@ def _compute_group_focal_scores(
     *,
     signal_matrix: np.ndarray,
     base_weights: np.ndarray,
+    use_focal: bool,
     temperature: float,
     gamma: float,
     epsilon: float,
@@ -430,6 +447,12 @@ def _compute_group_focal_scores(
     3. 返回组内结果，交由上层做无效样本补偿和跨组汇总。
     """
     direct_scores = signal_matrix @ base_weights
+    if not use_focal:
+        return {
+            "direct_scores": direct_scores,
+            "focal_scores": direct_scores,
+            "normalized_focal_weights": base_weights,
+        }
 
     temperature = max(float(temperature), 1e-6)
     scaled_scores = direct_scores / temperature
@@ -534,6 +557,7 @@ def postprocess_reward(
     signal_slugs = [slugify_reward_name(signal_key) for signal_key in signal_keys]
     if len(set(signal_slugs)) != len(signal_slugs):
         raise ValueError(f"reward_signals keys slugify to non-unique names: {signal_keys}")
+    webbench_pass_idx = signal_slugs.index("webbench_pass") if "webbench_pass" in signal_slugs else None
 
     base_weights = _build_base_weights(signal_keys, _get_focal_param(focal_config, "base_weights", []))
     temperature = float(_get_focal_param(focal_config, "temperature", 10.0))
@@ -543,10 +567,8 @@ def postprocess_reward(
     weight_max = float(_get_focal_param(focal_config, "weight_max", 0.3))
 
     # valid sample 参与 focal 权重估计；invalid sample 不参与估计，只做补偿回填。
-    valid_sample_mask = np.asarray(
-        [str(status) in VALID_FOCAL_OVERALL_STATUSES for status in overall_statuses],
-        dtype=bool,
-    )
+    valid_overall_statuses = WEBBENCH_VALID_OVERALL_STATUSES if "webbench_pass" in signal_slugs else VALID_FOCAL_OVERALL_STATUSES
+    valid_sample_mask = np.asarray([str(status) in valid_overall_statuses for status in overall_statuses], dtype=bool)
     llm_generation_error_mask = np.asarray(
         [str(status) == "llm_generation_error" for status in overall_statuses],
         dtype=bool,
@@ -577,6 +599,7 @@ def postprocess_reward(
         group_score_result = _compute_group_focal_scores(
             signal_matrix=valid_group_signals,
             base_weights=base_weights,
+            use_focal=use_focal,
             temperature=temperature,
             gamma=gamma,
             epsilon=epsilon,
@@ -610,7 +633,7 @@ def postprocess_reward(
             status_counts[str(status)] += 1
         raise ValueError(
             "No valid focal reward groups found. "
-            f"Expected overall_status in {sorted(VALID_FOCAL_OVERALL_STATUSES)}, got {dict(status_counts)}"
+            f"Expected overall_status in {sorted(valid_overall_statuses)}, got {dict(status_counts)}"
         )
 
     batch_valid_direct_mean = float(np.mean(direct_scores[valid_sample_mask]))
@@ -658,6 +681,13 @@ def postprocess_reward(
     }
     for signal_idx, signal_slug in enumerate(signal_slugs):
         validation_extra_info[f"reward_signal_{signal_slug}"] = signal_matrix[:, signal_idx].tolist()
+    if webbench_pass_idx is not None:
+        status_metric_statuses = sorted(set(WEBBENCH_STATUS_METRIC_STATUSES) | {str(status) for status in overall_statuses})
+        for status in status_metric_statuses:
+            status_slug = slugify_reward_name(status)
+            validation_extra_info[f"webbench_status_{status_slug}"] = [
+                1.0 if str(overall_status) == status else 0.0 for overall_status in overall_statuses
+            ]
 
     # dump_extra_info 保留原始嵌套调试信息，优先服务问题定位。
     dump_extra_info = {}
@@ -679,7 +709,7 @@ def postprocess_reward(
     # 4) reward_status/*:       overall_status / error_message / 核心 reward 分数摘要
     # 5) render_status/*:       render 阶段状态占比
     # 6) judge_status/*:        judge 阶段状态占比
-    # 离散状态类指标统一只打 rate，不再打 count，便于面板阅读。
+    # WebBench 离散状态同时打 rate/count，便于观察比例和绝对样本数。
     metrics = {}
     overall_status_counts = defaultdict(int)
     render_status_counts = defaultdict(int)
@@ -723,9 +753,17 @@ def postprocess_reward(
     for error_message in error_messages:
         error_message_counts[_normalize_error_message(error_message)] += 1
 
+    if webbench_pass_idx is not None:
+        for status in WEBBENCH_STATUS_METRIC_STATUSES:
+            status_slug = slugify_reward_name(status)
+            metrics[f"webbench/status/{status_slug}/rate"] = 0.0
+            metrics[f"webbench/status/{status_slug}/count"] = 0.0
     for status, count in overall_status_counts.items():
         status_slug = slugify_reward_name(status)
         metrics[f"reward_status/overall_status/{status_slug}/rate"] = float(count / batch_size)
+        if webbench_pass_idx is not None:
+            metrics[f"webbench/status/{status_slug}/rate"] = float(count / batch_size)
+            metrics[f"webbench/status/{status_slug}/count"] = float(count)
     for error_message, count in error_message_counts.items():
         error_slug = compact_metric_slug(error_message, max_len=180)
         metrics[f"reward_status/error_message/{error_slug}/rate"] = float(count / batch_size)
@@ -743,6 +781,12 @@ def postprocess_reward(
     metrics["reward_status/valid_sample/rate"] = float(np.mean(valid_sample_mask.astype(np.float64)))
     metrics["reward_status/llm_generation_error/rate"] = float(np.mean(llm_generation_error_mask.astype(np.float64)))
     metrics["reward_status/valid_group/rate"] = float(len(group_weights) / max(1, len(uid_to_indices)))
+    if webbench_pass_idx is not None:
+        webbench_pass = signal_matrix[:, webbench_pass_idx].astype(np.float64)
+        webbench_pass_count = float(np.sum(webbench_pass))
+        metrics["webbench/pass_count"] = webbench_pass_count
+        metrics["webbench/fail_count"] = float(batch_size - webbench_pass_count)
+        metrics["webbench/pass_rate"] = float(np.mean(webbench_pass))
     _add_render_debug_metrics(
         metrics=metrics,
         render_debug_infos=render_debug_infos,
